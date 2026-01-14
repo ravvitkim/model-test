@@ -1,0 +1,25 @@
+# ============================================
+# Text Similarity Pipeline v2 - Requirements
+# ============================================
+
+# ⚠️ PyTorch는 CUDA 버전에 맞게 먼저 설치!
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# FastAPI Backend
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+
+# HuggingFace
+transformers
+accelerate
+sentence-transformers
+sentencepiece
+
+# ML/Computation
+numpy
+scikit-learn
+
+# Utils
+python-dotenv

@@ -1,0 +1,806 @@
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 기본 스타일 & 리셋 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: #0f0f0f;
+  min-height: 100vh;
+  color: #e5e5e5;
+  display: flex;
+  justify-content: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 앱 컨테이너 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.app {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 헤더 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.title {
+  font-size: 2.2rem;
+  color: #ffffff;
+  margin-bottom: 0.5rem;
+  font-weight: 700;
+}
+
+.pipeline {
+  font-size: 0.85rem;
+  color: #888;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  background: #1a1a1a;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  display: inline-block;
+  border: 1px solid #2a2a2a;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 탭 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  background: #1a1a1a;
+  padding: 0.4rem;
+  border-radius: 12px;
+}
+
+.tab {
+  flex: 1;
+  padding: 0.75rem 1.5rem;
+  border: none;
+  background: transparent;
+  color: #888;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.tab:hover {
+  color: #ccc;
+  background: #252525;
+}
+
+.tab.active {
+  background: #2563eb;
+  color: white;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 메인 컨텐츠 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.main {
+  background: #1a1a1a;
+  border-radius: 16px;
+  padding: 2rem;
+  border: 1px solid #2a2a2a;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 입력 섹션 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.input-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.text-input label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.text-input textarea {
+  width: 100%;
+  padding: 1rem;
+  border: 1px solid #333;
+  border-radius: 10px;
+  background: #0f0f0f;
+  color: #e5e5e5;
+  font-size: 0.95rem;
+  resize: vertical;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.text-input textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.text-input textarea::placeholder {
+  color: #555;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 모델 선택 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.model-select {
+  margin-bottom: 1.5rem;
+}
+
+.model-select label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.model-select select {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid #333;
+  border-radius: 10px;
+  background: #0f0f0f;
+  color: #e5e5e5;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.model-select select:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 다중 모델 선택 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.model-multi-select {
+  margin-bottom: 1.5rem;
+}
+
+.model-multi-select label {
+  display: block;
+  margin-bottom: 0.8rem;
+  font-weight: 600;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.model-checkboxes {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.75rem 1rem;
+  background: #0f0f0f;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid #2a2a2a;
+}
+
+.checkbox-label:hover {
+  border-color: #444;
+}
+
+.checkbox-label.selected {
+  background: rgba(37, 99, 235, 0.15);
+  border-color: #2563eb;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+}
+
+.checkbox-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.checkbox-text strong {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.checkbox-text small {
+  color: #666;
+  font-size: 0.75rem;
+}
+
+.category-badge {
+  font-size: 0.65rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  margin-left: 0.4rem;
+  font-weight: 500;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 커스텀 모델 섹션 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.custom-model-section {
+  margin-top: 1rem;
+  padding: 1.25rem;
+  background: #0f0f0f;
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  border: 1px solid #2a2a2a;
+}
+
+.custom-model-section label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.custom-model-section input {
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #1a1a1a;
+  color: #e5e5e5;
+  font-size: 0.95rem;
+  transition: border-color 0.2s;
+}
+
+.custom-model-section input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.custom-model-input {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.custom-model-input input {
+  flex: 1;
+}
+
+.add-btn {
+  padding: 0.8rem 1.25rem;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.add-btn:hover {
+  background: #1d4ed8;
+}
+
+.custom-models-list {
+  margin-top: 1rem;
+}
+
+.custom-models-list strong {
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.custom-model-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.custom-model-tag {
+  background: rgba(37, 99, 235, 0.15);
+  border: 1px solid rgba(37, 99, 235, 0.3);
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #93c5fd;
+}
+
+.custom-model-tag button {
+  background: none;
+  border: none;
+  color: #f87171;
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0;
+  line-height: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 비교 버튼 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.compare-btn {
+  width: 100%;
+  padding: 1rem 2rem;
+  border: none;
+  border-radius: 10px;
+  background: #2563eb;
+  color: white;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 1rem;
+}
+
+.compare-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.compare-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 결과 섹션 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.result-section {
+  margin-top: 2rem;
+  padding-top: 2rem;
+  border-top: 1px solid #2a2a2a;
+}
+
+.result-title {
+  font-size: 1.2rem;
+  color: #fff;
+  margin-bottom: 1.5rem;
+  text-align: center;
+  font-weight: 600;
+}
+
+.score-display {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.score-display h2 {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+  color: #ccc;
+  font-weight: 600;
+}
+
+.score {
+  font-size: 3.5rem;
+  font-weight: 700;
+}
+
+.interpretation {
+  font-size: 1.1rem;
+  color: #888;
+  margin-top: 0.5rem;
+}
+
+.score-bar {
+  height: 8px;
+  background: #2a2a2a;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 1rem 0 0.5rem;
+}
+
+.score-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.5s ease-out;
+}
+
+.model-info {
+  font-size: 0.8rem;
+  color: #666;
+  margin-top: 0.5rem;
+}
+
+.model-info.center {
+  text-align: center;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 처리 결과 상세 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.detail-card {
+  background: #0f0f0f;
+  border-radius: 12px;
+  padding: 1.25rem;
+  border: 1px solid #2a2a2a;
+}
+
+.detail-card h3 {
+  font-size: 1rem;
+  color: #ccc;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #2a2a2a;
+  font-weight: 600;
+}
+
+.detail-item {
+  margin-bottom: 1rem;
+}
+
+.detail-item strong {
+  display: block;
+  margin-bottom: 0.5rem;
+  color: #888;
+  font-size: 0.85rem;
+}
+
+.chunk {
+  padding: 0.4rem 0.75rem;
+  background: #1a1a1a;
+  border-radius: 6px;
+  margin-bottom: 0.3rem;
+  font-size: 0.85rem;
+  border: 1px solid #2a2a2a;
+}
+
+.pos-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.pos-tag {
+  background: #1a1a1a;
+  border: 1px solid #333;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.8rem;
+}
+
+.pos-tag sub {
+  font-size: 0.65rem;
+  color: #2563eb;
+  margin-left: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 모델 결과 아이템 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.model-result-item {
+  background: #0f0f0f;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid #2a2a2a;
+}
+
+.model-result-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.4rem;
+}
+
+.model-rank {
+  font-weight: 700;
+  color: #2563eb;
+  margin-right: 0.5rem;
+}
+
+.model-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.model-score {
+  font-size: 1.4rem;
+  font-weight: 700;
+}
+
+.model-path {
+  font-size: 0.75rem;
+  color: #555;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  margin-bottom: 0.5rem;
+}
+
+.time-info {
+  font-size: 0.75rem;
+  color: #555;
+  margin-top: 0.4rem;
+}
+
+.error-badge {
+  color: #f87171;
+  font-size: 0.8rem;
+  margin-left: 0.5rem;
+}
+
+.error-message {
+  color: #f87171;
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 매트릭스 탭 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.matrix-input-section {
+  margin-bottom: 1.5rem;
+}
+
+.matrix-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.matrix-header label {
+  font-weight: 600;
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.add-text-btn {
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #2563eb;
+  color: white;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: all 0.2s;
+}
+
+.add-text-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.add-text-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.matrix-text-input {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.text-number {
+  width: 28px;
+  height: 28px;
+  background: #2563eb;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.matrix-text-input textarea {
+  flex: 1;
+  padding: 0.75rem 1rem;
+  border: 1px solid #333;
+  border-radius: 8px;
+  background: #0f0f0f;
+  color: #e5e5e5;
+  font-size: 0.9rem;
+  resize: none;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.matrix-text-input textarea:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.remove-text-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.15);
+  color: #f87171;
+  cursor: pointer;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.remove-text-btn:hover {
+  background: rgba(248, 113, 113, 0.25);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 매트릭스 테이블 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.matrix-container {
+  overflow-x: auto;
+  margin: 1.5rem 0;
+}
+
+.matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 auto;
+}
+
+.matrix-table th,
+.matrix-table td {
+  padding: 0.75rem 1rem;
+  text-align: center;
+  border: 1px solid #2a2a2a;
+}
+
+.matrix-table th {
+  background: #1a1a1a;
+  color: #2563eb;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.row-header {
+  background: #1a1a1a;
+  color: #2563eb;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.matrix-cell {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 매트릭스 범례 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.matrix-legend {
+  background: #0f0f0f;
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-top: 1.5rem;
+  border: 1px solid #2a2a2a;
+}
+
+.matrix-legend h3 {
+  font-size: 0.95rem;
+  color: #ccc;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #1a1a1a;
+}
+
+.legend-item:last-child {
+  border-bottom: none;
+}
+
+.legend-number {
+  width: 32px;
+  height: 32px;
+  background: #2563eb;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.legend-text {
+  color: #ccc;
+  font-size: 0.85rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 푸터 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+.footer {
+  text-align: center;
+  margin-top: 2rem;
+  padding-top: 1rem;
+  color: #555;
+  font-size: 0.85rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════ */
+/* 반응형 */
+/* ═══════════════════════════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  .app {
+    padding: 1rem;
+  }
+
+  .input-section,
+  .details-grid,
+  .model-checkboxes {
+    grid-template-columns: 1fr;
+  }
+
+  .title {
+    font-size: 1.6rem;
+  }
+
+  .score {
+    font-size: 2.5rem;
+  }
+
+  .tabs {
+    flex-direction: column;
+  }
+
+  .matrix-header {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+}
