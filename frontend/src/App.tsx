@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import './App.css'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -44,21 +44,59 @@ interface MatrixResult {
   model_used: string
 }
 
+// RAG 타입
+interface SearchResult {
+  text: string
+  similarity: number
+  metadata: {
+    doc_name: string
+    chunk_index: number
+    total_chunks?: number
+    chunk_method?: string
+    chunk_size?: number
+  }
+  aiAnswer?: string
+  aiLoading?: boolean
+}
+
+interface RAGSearchResult {
+  query: string
+  results?: SearchResult[]
+  sources?: SearchResult[]
+  context?: string
+  count?: number
+  answer?: string
+}
+
+interface DocumentInfo {
+  doc_name: string
+  chunk_count: number
+  chunk_method?: string
+  chunk_size?: number
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 프리셋 모델
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PRESET_MODELS = [
-  { key: 'ko-sroberta', name: 'Ko-SROBERTA', desc: '한국어 전용 (추천)', category: 'korean' },
-  { key: 'ko-sbert', name: 'Ko-SBERT', desc: '한국어 STS', category: 'korean' },
-  { key: 'ko-simcse', name: 'Ko-SimCSE', desc: '한국어 SimCSE', category: 'korean' },
-  { key: 'qwen3-0.6b', name: 'Qwen3-Embedding-0.6B', desc: '다국어 (가벼움)', category: 'multilingual' },
-  { key: 'qwen3-4b', name: 'Qwen3-Embedding-4B', desc: '다국어 (고성능)', category: 'multilingual' },
-  { key: 'multilingual-minilm', name: 'Multilingual MiniLM', desc: '다국어 (가벼움)', category: 'multilingual' },
-  { key: 'multilingual-e5', name: 'Multilingual E5', desc: '다국어 (고성능)', category: 'multilingual' },
-  { key: 'bge-m3', name: 'BGE-M3', desc: '다국어 (최신)', category: 'multilingual' },
-  { key: 'minilm', name: 'MiniLM', desc: '영어 전용 (빠름)', category: 'english' },
-  { key: 'mpnet', name: 'MPNet', desc: '영어 전용 (고성능)', category: 'english' },
+  { key: 'ko-sroberta', name: 'Ko-SROBERTA', desc: '한국어 추천', category: 'korean' },
+  { key: 'ko-sbert', name: 'Ko-SBERT', desc: '한국어', category: 'korean' },
+  { key: 'ko-simcse', name: 'Ko-SimCSE', desc: '한국어', category: 'korean' },
+  { key: 'qwen3-0.6b', name: 'Qwen3-0.6B', desc: '다국어 경량', category: 'multilingual' },
+  { key: 'qwen3-4b', name: 'Qwen3-4B', desc: '다국어 고성능', category: 'multilingual' },
+  { key: 'multilingual-minilm', name: 'MiniLM 다국어', desc: '경량', category: 'multilingual' },
+  { key: 'multilingual-e5', name: 'E5 다국어', desc: '고성능', category: 'multilingual' },
+  { key: 'bge-m3', name: 'BGE-M3', desc: '최신', category: 'multilingual' },
+  { key: 'minilm', name: 'MiniLM', desc: '영어 경량', category: 'english' },
+  { key: 'mpnet', name: 'MPNet', desc: '영어 고성능', category: 'english' },
+]
+
+const LLM_MODELS = [
+  { key: 'Qwen/Qwen2.5-0.5B-Instruct', name: 'Qwen2.5-0.5B', desc: '초경량 (추천)' },
+  { key: 'Qwen/Qwen2.5-1.5B-Instruct', name: 'Qwen2.5-1.5B', desc: '경량' },
+  { key: 'Qwen/Qwen2.5-3B-Instruct', name: 'Qwen2.5-3B', desc: '고성능 (VRAM 6GB+)' },
+  { key: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0', name: 'TinyLlama', desc: '영어 특화' },
 ]
 
 const API_URL = 'http://localhost:8000'
@@ -74,13 +112,12 @@ const getSimilarityColor = (score: number) => {
   return '#ef4444'
 }
 
-const getCategoryColor = (category: string) => {
-  switch (category) {
-    case 'korean': return { bg: 'rgba(59, 130, 246, 0.3)', text: '#60a5fa' }
-    case 'multilingual': return { bg: 'rgba(168, 85, 247, 0.3)', text: '#a78bfa' }
-    case 'english': return { bg: 'rgba(34, 197, 94, 0.3)', text: '#4ade80' }
-    default: return { bg: 'rgba(100, 116, 139, 0.3)', text: '#94a3b8' }
-  }
+const getSimilarityLabel = (score: number) => {
+  if (score >= 0.8) return '매우 높음'
+  if (score >= 0.6) return '높음'
+  if (score >= 0.4) return '보통'
+  if (score >= 0.2) return '낮음'
+  return '매우 낮음'
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -88,25 +125,32 @@ const getCategoryColor = (category: string) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function App() {
-  // 단일 비교용
   const [text1, setText1] = useState('')
   const [text2, setText2] = useState('')
   const [selectedModel, setSelectedModel] = useState('ko-sroberta')
   const [result, setResult] = useState<CompareResult | null>(null)
-  
-  // 다중 모델 비교용
+
   const [multiResult, setMultiResult] = useState<MultiModelResult | null>(null)
   const [selectedModels, setSelectedModels] = useState<string[]>(['ko-sroberta', 'qwen3-0.6b'])
-  const [customModel, setCustomModel] = useState('')
-  const [customModels, setCustomModels] = useState<string[]>([])
-  
-  // 다중 텍스트 비교용 (매트릭스)
+
   const [texts, setTexts] = useState<string[]>(['', '', ''])
   const [matrixResult, setMatrixResult] = useState<MatrixResult | null>(null)
-  const [matrixModel, setMatrixModel] = useState('ko-sroberta')
-  
+
+  const [ragQuery, setRagQuery] = useState('')
+  const [ragResult, setRagResult] = useState<RAGSearchResult | null>(null)
+  const [documents, setDocuments] = useState<DocumentInfo[]>([])
+  const [uploadStatus, setUploadStatus] = useState<string>('')
+  const [ragModel, setRagModel] = useState('ko-sroberta')
+  const [llmModel, setLlmModel] = useState('Qwen/Qwen2.5-3B-Instruct')
+  const [chunkMethod, setChunkMethod] = useState<string>('sentence')
+  const [chunkSize, setChunkSize] = useState<number>(300)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const [globalAnswer, setGlobalAnswer] = useState<string>('')
+  const [globalAnswerLoading, setGlobalAnswerLoading] = useState(false)
+
   const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<'single' | 'multi' | 'matrix'>('single')
+  const [activeTab, setActiveTab] = useState<'single' | 'multi' | 'matrix' | 'rag'>('single')
 
   // 단일 모델 비교
   const handleCompare = async () => {
@@ -114,26 +158,18 @@ function App() {
       alert('두 텍스트를 모두 입력해주세요.')
       return
     }
-
     setLoading(true)
     setResult(null)
-
     try {
       const response = await fetch(`${API_URL}/compare`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text1, text2, model: selectedModel })
       })
-
-      if (!response.ok) {
-        const error = await response.json()
-        throw new Error(error.detail || 'API 요청 실패')
-      }
-      
-      const data = await response.json()
-      setResult(data)
+      if (!response.ok) throw new Error('API 요청 실패')
+      setResult(await response.json())
     } catch (error) {
-      alert(`오류: ${error instanceof Error ? error.message : '서버 연결 실패'}`)
+      alert('서버 연결 실패')
     } finally {
       setLoading(false)
     }
@@ -145,395 +181,305 @@ function App() {
       alert('두 텍스트를 모두 입력해주세요.')
       return
     }
-
-    const allModels = [...selectedModels, ...customModels]
-    if (allModels.length < 1) {
+    if (selectedModels.length < 1) {
       alert('최소 1개 모델을 선택해주세요.')
       return
     }
-
     setLoading(true)
     setMultiResult(null)
-
     try {
       const response = await fetch(`${API_URL}/compare/models`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text1, text2, models: allModels })
+        body: JSON.stringify({ text1, text2, models: selectedModels })
       })
-
       if (!response.ok) throw new Error('API 요청 실패')
-      
-      const data = await response.json()
-      setMultiResult(data)
+      setMultiResult(await response.json())
     } catch (error) {
-      alert('서버 연결 실패. 백엔드가 실행 중인지 확인하세요.')
+      alert('서버 연결 실패')
     } finally {
       setLoading(false)
     }
   }
 
-  // 다중 텍스트 매트릭스 비교
+  // 매트릭스 비교
   const handleMatrixCompare = async () => {
     const validTexts = texts.filter(t => t.trim())
     if (validTexts.length < 2) {
       alert('최소 2개 텍스트를 입력해주세요.')
       return
     }
-
     setLoading(true)
     setMatrixResult(null)
-
     try {
       const response = await fetch(`${API_URL}/compare/matrix`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts: validTexts, model: matrixModel })
+        body: JSON.stringify({ texts: validTexts, model: selectedModel })
       })
-
       if (!response.ok) throw new Error('API 요청 실패')
-      
-      const data = await response.json()
-      setMatrixResult(data)
+      setMatrixResult(await response.json())
     } catch (error) {
-      alert('서버 연결 실패. 백엔드가 실행 중인지 확인하세요.')
+      alert('서버 연결 실패')
     } finally {
       setLoading(false)
     }
   }
 
+  // 파일 업로드
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setLoading(true)
+    setUploadStatus('업로드 중...')
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('collection', 'documents')
+      formData.append('chunk_size', chunkSize.toString())
+      formData.append('chunk_method', chunkMethod)
+      formData.append('model', ragModel)
+      const response = await fetch(`${API_URL}/rag/upload`, {
+        method: 'POST',
+        body: formData
+      })
+      if (!response.ok) throw new Error('업로드 실패')
+      const data = await response.json()
+      setUploadStatus(`✅ ${data.filename} (${data.chunks_created}개 조각)`)
+      fetchDocuments()
+    } catch (error) {
+      setUploadStatus(`❌ 업로드 실패`)
+    } finally {
+      setLoading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const fetchDocuments = async () => {
+    try {
+      const response = await fetch(`${API_URL}/rag/documents?collection=documents`)
+      if (response.ok) {
+        const data = await response.json()
+        setDocuments(data.documents || [])
+      }
+    } catch (error) {
+      console.error('문서 목록 로드 실패')
+    }
+  }
+
+  // 검색만
+  const handleRAGSearch = async () => {
+    if (!ragQuery.trim()) {
+      alert('질문을 입력해주세요.')
+      return
+    }
+    setLoading(true)
+    setRagResult(null)
+    setGlobalAnswer('')
+    try {
+      const response = await fetch(`${API_URL}/rag/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: ragQuery,
+          collection: 'documents',
+          n_results: 5,
+          model: ragModel
+        })
+      })
+      if (!response.ok) throw new Error('검색 실패')
+      setRagResult(await response.json())
+    } catch (error) {
+      alert('검색 실패')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 전체 AI 답변
+  const handleGlobalAIAnswer = async () => {
+    if (!ragQuery.trim()) return
+    setGlobalAnswerLoading(true)
+    setGlobalAnswer('')
+    try {
+      const response = await fetch(`${API_URL}/rag/ask-llm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: ragQuery,
+          collection: 'documents',
+          n_results: 5,
+          embedding_model: ragModel,
+          llm_model: llmModel
+        })
+      })
+      if (!response.ok) throw new Error('LLM 실패')
+      const data = await response.json()
+      setGlobalAnswer(data.answer || '답변 생성 실패')
+      if (data.sources) {
+        setRagResult(prev => prev ? { ...prev, results: data.sources } : { query: ragQuery, results: data.sources })
+      }
+    } catch (error) {
+      setGlobalAnswer('오류 발생')
+    } finally {
+      setGlobalAnswerLoading(false)
+    }
+  }
+
+  // 개별 청크 AI 답변
+  const handleChunkAIAnswer = async (index: number, chunkText: string) => {
+    if (!ragResult?.results) return
+    const updatedResults = [...ragResult.results]
+    updatedResults[index] = { ...updatedResults[index], aiLoading: true }
+    setRagResult({ ...ragResult, results: updatedResults })
+
+    try {
+      const response = await fetch(`${API_URL}/rag/ask-chunk`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: ragQuery,
+          chunk_text: chunkText,
+          llm_model: llmModel
+        })
+      })
+      if (!response.ok) throw new Error('실패')
+      const data = await response.json()
+      const newResults = [...(ragResult.results || [])]
+      newResults[index] = { ...newResults[index], aiAnswer: data.answer || '답변 실패', aiLoading: false }
+      setRagResult({ ...ragResult, results: newResults })
+    } catch {
+      const newResults = [...(ragResult.results || [])]
+      newResults[index] = { ...newResults[index], aiAnswer: '오류 발생', aiLoading: false }
+      setRagResult({ ...ragResult, results: newResults })
+    }
+  }
+
+  const handleDeleteDocument = async (docName: string) => {
+    if (!confirm(`"${docName}" 삭제?`)) return
+    try {
+      const response = await fetch(`${API_URL}/rag/document`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_name: docName, collection: 'documents' })
+      })
+      if (response.ok) {
+        fetchDocuments()
+        setUploadStatus(`🗑️ ${docName} 삭제됨`)
+      }
+    } catch {
+      alert('삭제 실패')
+    }
+  }
+
   const toggleModelSelection = (modelKey: string) => {
-    setSelectedModels(prev => 
-      prev.includes(modelKey) 
-        ? prev.filter(m => m !== modelKey)
-        : [...prev, modelKey]
+    setSelectedModels(prev =>
+      prev.includes(modelKey) ? prev.filter(m => m !== modelKey) : [...prev, modelKey]
     )
   }
 
-  const addCustomModel = () => {
-    if (!customModel.trim()) return
-    if (customModels.includes(customModel) || PRESET_MODELS.some(m => m.key === customModel)) {
-      alert('이미 추가된 모델입니다.')
-      return
-    }
-    setCustomModels(prev => [...prev, customModel])
-    setCustomModel('')
-  }
-
-  const removeCustomModel = (model: string) => {
-    setCustomModels(prev => prev.filter(m => m !== model))
-  }
-
-  // 텍스트 입력 필드 관리
   const updateText = (index: number, value: string) => {
     const newTexts = [...texts]
     newTexts[index] = value
     setTexts(newTexts)
   }
 
-  const addTextField = () => {
-    if (texts.length < 10) {
-      setTexts([...texts, ''])
-    }
-  }
-
-  const removeTextField = (index: number) => {
-    if (texts.length > 2) {
-      setTexts(texts.filter((_, i) => i !== index))
-    }
+  const handleTabChange = (tab: 'single' | 'multi' | 'matrix' | 'rag') => {
+    setActiveTab(tab)
+    if (tab === 'rag') fetchDocuments()
   }
 
   return (
     <div className="app">
       <header className="header">
-        <h1 className="title">🔍 텍스트 유사도 비교</h1>
-        <p className="pipeline">
-          [원문] → [파싱: 품사분석] → [청킹: 의미단위] → [임베딩: 벡터] → [코사인 유사도]
-        </p>
+        <h1 className="title">🔍 텍스트 유사도 + RAG</h1>
+        <p className="subtitle">문서 업로드 → 검색 → AI 답변</p>
       </header>
 
       <div className="tabs">
-        <button 
-          className={`tab ${activeTab === 'single' ? 'active' : ''}`}
-          onClick={() => setActiveTab('single')}
-        >
-          단일 모델 비교
-        </button>
-        <button 
-          className={`tab ${activeTab === 'multi' ? 'active' : ''}`}
-          onClick={() => setActiveTab('multi')}
-        >
-          🔥 모델 비교
-        </button>
-        <button 
-          className={`tab ${activeTab === 'matrix' ? 'active' : ''}`}
-          onClick={() => setActiveTab('matrix')}
-        >
-          📊 다중 텍스트
-        </button>
+        {['single', 'multi', 'matrix', 'rag'].map(tab => (
+          <button
+            key={tab}
+            className={`tab ${activeTab === tab ? 'active' : ''}`}
+            onClick={() => handleTabChange(tab as any)}
+          >
+            {tab === 'single' && '단일 비교'}
+            {tab === 'multi' && '모델 비교'}
+            {tab === 'matrix' && '매트릭스'}
+            {tab === 'rag' && '📄 RAG'}
+          </button>
+        ))}
       </div>
 
       <main className="main">
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* 단일 모델 탭 */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* 단일 비교 */}
         {activeTab === 'single' && (
           <>
             <div className="input-section">
               <div className="text-input">
                 <label>텍스트 1</label>
-                <textarea
-                  value={text1}
-                  onChange={(e) => setText1(e.target.value)}
-                  placeholder="첫 번째 텍스트를 입력하세요..."
-                  rows={5}
-                />
+                <textarea value={text1} onChange={(e) => setText1(e.target.value)} placeholder="첫 번째 텍스트..." rows={5} />
               </div>
               <div className="text-input">
                 <label>텍스트 2</label>
-                <textarea
-                  value={text2}
-                  onChange={(e) => setText2(e.target.value)}
-                  placeholder="두 번째 텍스트를 입력하세요..."
-                  rows={5}
-                />
+                <textarea value={text2} onChange={(e) => setText2(e.target.value)} placeholder="두 번째 텍스트..." rows={5} />
               </div>
             </div>
-
             <div className="model-select">
-              <label>임베딩 모델 선택</label>
+              <label>모델</label>
               <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-                <optgroup label="🇰🇷 한국어 전용">
-                  {PRESET_MODELS.filter(m => m.category === 'korean').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="🌍 다국어">
-                  {PRESET_MODELS.filter(m => m.category === 'multilingual').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="🇺🇸 영어 전용">
-                  {PRESET_MODELS.filter(m => m.category === 'english').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
+                {PRESET_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>)}
               </select>
             </div>
-
-            <div className="custom-model-section">
-              <label>또는 HuggingFace 모델 경로 직접 입력</label>
-              <input
-                type="text"
-                value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                placeholder="예: Qwen/Qwen3-Embedding-0.6B"
-              />
-            </div>
-
-            <button className="compare-btn" onClick={handleCompare} disabled={loading}>
-              {loading ? '분석 중...' : '유사도 비교'}
+            <button className="primary-btn" onClick={handleCompare} disabled={loading}>
+              {loading ? '분석 중...' : '비교하기'}
             </button>
-
             {result && (
-              <div className="result-section">
-                <div className="score-display">
-                  <h2>유사도 점수</h2>
-                  <div className="score" style={{ color: getSimilarityColor(result.similarity) }}>
-                    {(result.similarity * 100).toFixed(1)}%
-                  </div>
-                  <div className="interpretation">{result.interpretation}</div>
-                  <div className="score-bar">
-                    <div 
-                      className="score-fill"
-                      style={{
-                        width: `${Math.max(result.similarity * 100, 5)}%`,
-                        backgroundColor: getSimilarityColor(result.similarity)
-                      }}
-                    />
-                  </div>
-                  <p className="model-info">
-                    모델: {result.model_used}<br/>
-                    로드: {result.load_time}s | 추론: {result.inference_time}s
-                  </p>
+              <div className="result-box">
+                <div className="score-big" style={{ color: getSimilarityColor(result.similarity) }}>
+                  {(result.similarity * 100).toFixed(1)}%
                 </div>
-
-                <div className="details-grid">
-                  <div className="detail-card">
-                    <h3>텍스트 1 처리 결과</h3>
-                    <div className="detail-item">
-                      <strong>청킹 결과:</strong>
-                      {result.text1_processed.chunks.map((chunk, i) => (
-                        <div key={i} className="chunk">{chunk}</div>
-                      ))}
-                    </div>
-                    <div className="detail-item">
-                      <strong>품사 태그:</strong>
-                      <div className="pos-tags">
-                        {result.text1_processed.pos_tags.slice(0, 8).map((tag, i) => (
-                          <span key={i} className="pos-tag">
-                            {tag[0]}<sub>{tag[1]}</sub>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="detail-card">
-                    <h3>텍스트 2 처리 결과</h3>
-                    <div className="detail-item">
-                      <strong>청킹 결과:</strong>
-                      {result.text2_processed.chunks.map((chunk, i) => (
-                        <div key={i} className="chunk">{chunk}</div>
-                      ))}
-                    </div>
-                    <div className="detail-item">
-                      <strong>품사 태그:</strong>
-                      <div className="pos-tags">
-                        {result.text2_processed.pos_tags.slice(0, 8).map((tag, i) => (
-                          <span key={i} className="pos-tag">
-                            {tag[0]}<sub>{tag[1]}</sub>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
+                <div className="score-label">{result.interpretation}</div>
+                <div className="score-bar">
+                  <div className="score-fill" style={{ width: `${result.similarity * 100}%`, backgroundColor: getSimilarityColor(result.similarity) }} />
                 </div>
               </div>
             )}
           </>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* 다중 모델 비교 탭 */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* 모델 비교 */}
         {activeTab === 'multi' && (
           <>
             <div className="input-section">
               <div className="text-input">
                 <label>텍스트 1</label>
-                <textarea
-                  value={text1}
-                  onChange={(e) => setText1(e.target.value)}
-                  placeholder="첫 번째 텍스트를 입력하세요..."
-                  rows={5}
-                />
+                <textarea value={text1} onChange={(e) => setText1(e.target.value)} placeholder="첫 번째 텍스트..." rows={4} />
               </div>
               <div className="text-input">
                 <label>텍스트 2</label>
-                <textarea
-                  value={text2}
-                  onChange={(e) => setText2(e.target.value)}
-                  placeholder="두 번째 텍스트를 입력하세요..."
-                  rows={5}
-                />
+                <textarea value={text2} onChange={(e) => setText2(e.target.value)} placeholder="두 번째 텍스트..." rows={4} />
               </div>
             </div>
-
-            <div className="model-multi-select">
-              <label>비교할 모델 선택</label>
-              <div className="model-checkboxes">
-                {PRESET_MODELS.map(m => {
-                  const isSelected = selectedModels.includes(m.key)
-                  const catColor = getCategoryColor(m.category)
-                  return (
-                    <label 
-                      key={m.key} 
-                      className={`checkbox-label ${isSelected ? 'selected' : ''}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={() => toggleModelSelection(m.key)}
-                      />
-                      <span className="checkbox-text">
-                        <strong>{m.name}</strong>
-                        <span 
-                          className="category-badge"
-                          style={{ background: catColor.bg, color: catColor.text }}
-                        >
-                          {m.category === 'korean' ? '한국어' : m.category === 'multilingual' ? '다국어' : '영어'}
-                        </span>
-                        <small>{m.desc}</small>
-                      </span>
-                    </label>
-                  )
-                })}
-              </div>
+            <div className="model-grid">
+              {PRESET_MODELS.map(m => (
+                <label key={m.key} className={`model-chip ${selectedModels.includes(m.key) ? 'selected' : ''}`}>
+                  <input type="checkbox" checked={selectedModels.includes(m.key)} onChange={() => toggleModelSelection(m.key)} />
+                  {m.name}
+                </label>
+              ))}
             </div>
-
-            <div className="custom-model-section">
-              <label>✨ 커스텀 HuggingFace 모델 추가</label>
-              <div className="custom-model-input">
-                <input
-                  type="text"
-                  value={customModel}
-                  onChange={(e) => setCustomModel(e.target.value)}
-                  placeholder="예: intfloat/multilingual-e5-small"
-                  onKeyDown={(e) => e.key === 'Enter' && addCustomModel()}
-                />
-                <button className="add-btn" onClick={addCustomModel}>추가</button>
-              </div>
-              
-              {customModels.length > 0 && (
-                <div className="custom-models-list">
-                  <strong>추가된 모델:</strong>
-                  <div className="custom-model-tags">
-                    {customModels.map(model => (
-                      <span key={model} className="custom-model-tag">
-                        {model}
-                        <button onClick={() => removeCustomModel(model)}>×</button>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <button className="compare-btn" onClick={handleMultiCompare} disabled={loading}>
-              {loading ? '모델 비교 중... (첫 로드시 오래 걸림)' : `${selectedModels.length + customModels.length}개 모델로 비교`}
+            <button className="primary-btn" onClick={handleMultiCompare} disabled={loading}>
+              {loading ? '비교 중...' : `${selectedModels.length}개 모델로 비교`}
             </button>
-
             {multiResult && (
-              <div className="result-section">
-                <h2 className="result-title">📊 모델별 유사도 비교 결과</h2>
-                
-                {multiResult.results.map((r, idx) => (
-                  <div key={idx} className="model-result-item">
-                    <div className="model-result-header">
-                      <div>
-                        <span className="model-rank">#{idx + 1}</span>
-                        <span className="model-name">{r.model_key}</span>
-                        {!r.success && <span className="error-badge">(로드 실패)</span>}
-                      </div>
-                      <span 
-                        className="model-score"
-                        style={{ color: r.success ? getSimilarityColor(r.similarity) : '#ef4444' }}
-                      >
-                        {r.success ? `${(r.similarity * 100).toFixed(1)}%` : 'ERROR'}
-                      </span>
-                    </div>
-                    
-                    <div className="model-path">{r.model_path}</div>
-                    
-                    {r.success ? (
-                      <>
-                        <div className="score-bar">
-                          <div 
-                            className="score-fill"
-                            style={{
-                              width: `${Math.max(r.similarity * 100, 5)}%`,
-                              backgroundColor: getSimilarityColor(r.similarity)
-                            }}
-                          />
-                        </div>
-                        <div className="time-info">
-                          {r.interpretation} | 로드: {r.load_time}s | 추론: {r.inference_time}s
-                        </div>
-                      </>
-                    ) : (
-                      <div className="error-message">{r.error}</div>
-                    )}
+              <div className="results-list">
+                {multiResult.results.map((r, i) => (
+                  <div key={i} className="result-row">
+                    <span className="result-name">{r.model_key}</span>
+                    <span className="result-score" style={{ color: getSimilarityColor(r.similarity) }}>
+                      {(r.similarity * 100).toFixed(1)}%
+                    </span>
                   </div>
                 ))}
               </div>
@@ -541,116 +487,190 @@ function App() {
           </>
         )}
 
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* 다중 텍스트 매트릭스 탭 */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
+        {/* 매트릭스 */}
         {activeTab === 'matrix' && (
           <>
-            <div className="matrix-input-section">
-              <div className="matrix-header">
-                <label>비교할 텍스트들 (최소 2개, 최대 10개)</label>
-                <button className="add-text-btn" onClick={addTextField} disabled={texts.length >= 10}>
-                  + 텍스트 추가
-                </button>
-              </div>
-              
-              {texts.map((text, index) => (
-                <div key={index} className="matrix-text-input">
-                  <div className="text-number">{index + 1}</div>
-                  <textarea
-                    value={text}
-                    onChange={(e) => updateText(index, e.target.value)}
-                    placeholder={`텍스트 ${index + 1}을 입력하세요...`}
-                    rows={2}
-                  />
+            <div className="matrix-inputs">
+              {texts.map((text, i) => (
+                <div key={i} className="matrix-row">
+                  <span className="row-num">{i + 1}</span>
+                  <textarea value={text} onChange={(e) => updateText(i, e.target.value)} placeholder={`텍스트 ${i + 1}`} rows={2} />
                   {texts.length > 2 && (
-                    <button className="remove-text-btn" onClick={() => removeTextField(index)}>
-                      ×
-                    </button>
+                    <button className="remove-btn" onClick={() => setTexts(texts.filter((_, j) => j !== i))}>×</button>
                   )}
                 </div>
               ))}
+              {texts.length < 10 && (
+                <button className="add-btn" onClick={() => setTexts([...texts, ''])}>+ 추가</button>
+              )}
             </div>
-
-            <div className="model-select">
-              <label>임베딩 모델 선택</label>
-              <select value={matrixModel} onChange={(e) => setMatrixModel(e.target.value)}>
-                <optgroup label="🇰🇷 한국어 전용">
-                  {PRESET_MODELS.filter(m => m.category === 'korean').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="🌍 다국어">
-                  {PRESET_MODELS.filter(m => m.category === 'multilingual').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="🇺🇸 영어 전용">
-                  {PRESET_MODELS.filter(m => m.category === 'english').map(m => (
-                    <option key={m.key} value={m.key}>{m.name} - {m.desc}</option>
-                  ))}
-                </optgroup>
-              </select>
-            </div>
-
-            <button className="compare-btn" onClick={handleMatrixCompare} disabled={loading}>
-              {loading ? '매트릭스 계산 중...' : `${texts.filter(t => t.trim()).length}개 텍스트 유사도 매트릭스`}
+            <button className="primary-btn" onClick={handleMatrixCompare} disabled={loading}>
+              {loading ? '계산 중...' : '매트릭스 생성'}
             </button>
-
             {matrixResult && (
-              <div className="result-section">
-                <h2 className="result-title">📊 유사도 매트릭스</h2>
-                <p className="model-info center">모델: {matrixResult.model_used}</p>
-                
-                <div className="matrix-container">
-                  <table className="matrix-table">
-                    <thead>
-                      <tr>
-                        <th></th>
-                        {matrixResult.texts.map((_, i) => (
-                          <th key={i}>T{i + 1}</th>
+              <div className="matrix-table-wrap">
+                <table className="matrix-table">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      {matrixResult.texts.map((_, i) => <th key={i}>{i + 1}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {matrixResult.similarity_matrix.map((row, i) => (
+                      <tr key={i}>
+                        <td className="row-head">{i + 1}</td>
+                        {row.map((score, j) => (
+                          <td key={j} style={{ backgroundColor: i === j ? '#333' : `${getSimilarityColor(score)}33`, color: getSimilarityColor(score) }}>
+                            {(score * 100).toFixed(0)}%
+                          </td>
                         ))}
                       </tr>
-                    </thead>
-                    <tbody>
-                      {matrixResult.similarity_matrix.map((row, i) => (
-                        <tr key={i}>
-                          <td className="row-header">T{i + 1}</td>
-                          {row.map((score, j) => (
-                            <td 
-                              key={j} 
-                              className="matrix-cell"
-                              style={{ 
-                                backgroundColor: i === j ? 'rgba(100,100,100,0.3)' : `${getSimilarityColor(score)}33`,
-                                color: i === j ? '#888' : getSimilarityColor(score)
-                              }}
-                            >
-                              {(score * 100).toFixed(1)}%
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-
-                <div className="matrix-legend">
-                  <h3>텍스트 목록</h3>
-                  {matrixResult.texts.map((text, i) => (
-                    <div key={i} className="legend-item">
-                      <span className="legend-number">T{i + 1}</span>
-                      <span className="legend-text">{text.length > 50 ? text.slice(0, 50) + '...' : text}</span>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </tbody>
+                </table>
               </div>
+            )}
+          </>
+        )}
+
+        {/* RAG */}
+        {activeTab === 'rag' && (
+          <>
+            {/* 설정 */}
+            <div className="settings-row">
+              <div className="setting">
+                <label>🔍 검색 모델</label>
+                <select value={ragModel} onChange={(e) => setRagModel(e.target.value)}>
+                  {PRESET_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>)}
+                </select>
+              </div>
+              <div className="setting">
+                <label>🤖 답변 모델</label>
+                <select value={llmModel} onChange={(e) => setLlmModel(e.target.value)}>
+                  {LLM_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* 청킹 설정 */}
+            <div className="chunk-settings">
+              <div className="chunk-method">
+                <button className={chunkMethod === 'sentence' ? 'active' : ''} onClick={() => setChunkMethod('sentence')}>
+                  📝 문장 단위
+                </button>
+                <button className={chunkMethod === 'paragraph' ? 'active' : ''} onClick={() => setChunkMethod('paragraph')}>
+                  📄 문단 단위
+                </button>
+              </div>
+              <div className="chunk-size">
+                <span>조각 크기: {chunkSize}자</span>
+                <input type="range" min="200" max="2000" step="100" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} />
+              </div>
+            </div>
+
+            {/* 업로드 */}
+            <div className="upload-section">
+              <label>📁 문서 업로드 (PDF, DOCX, TXT)</label>
+              <input ref={fileInputRef} type="file" accept=".pdf,.docx,.doc,.txt" onChange={handleFileUpload} disabled={loading} />
+              {uploadStatus && <p className="status">{uploadStatus}</p>}
+            </div>
+
+            {/* 문서 목록 */}
+            {documents.length > 0 && (
+              <div className="doc-list">
+                <label>📚 업로드된 문서</label>
+                {documents.map((doc, i) => (
+                  <div key={i} className="doc-item">
+                    <div>
+                      <strong>{doc.doc_name}</strong>
+                      <span className="doc-meta">{doc.chunk_count}개 조각</span>
+                    </div>
+                    <button onClick={() => handleDeleteDocument(doc.doc_name)}>🗑️</button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* 질문 */}
+            <div className="query-section">
+              <label>💬 질문</label>
+              <textarea value={ragQuery} onChange={(e) => setRagQuery(e.target.value)} placeholder="문서에 대해 질문하세요..." rows={3} />
+              <div className="query-btns">
+                <button className="search-btn" onClick={handleRAGSearch} disabled={loading || documents.length === 0}>
+                  🔍 검색만
+                </button>
+                <button
+                  className="ai-btn"
+                  onClick={async () => { await handleRAGSearch(); await handleGlobalAIAnswer(); }}
+                  disabled={loading || globalAnswerLoading || documents.length === 0}
+                >
+                  ✨ 검색 + AI 답변
+                </button>
+              </div>
+            </div>
+
+            {/* 전체 AI 답변 */}
+            {(globalAnswerLoading || globalAnswer) && (
+              <div className="global-answer">
+                <h3>🤖 AI 종합 답변</h3>
+                {globalAnswerLoading ? (
+                  <div className="loading-answer">답변 생성 중...</div>
+                ) : (
+                  <div className="answer-text">{globalAnswer}</div>
+                )}
+              </div>
+            )}
+
+            {/* 검색 결과 */}
+            {ragResult?.results && ragResult.results.length > 0 && (
+              <div className="search-results">
+                <h3>📄 관련 문서 조각 ({ragResult.results.length}개)</h3>
+                
+                {ragResult.results.map((r, idx) => (
+                  <div key={idx} className="result-card">
+                    {/* 상단: 출처 + 연관도 */}
+                    <div className="card-header">
+                      <span className="source-file">📄 {r.metadata?.doc_name}</span>
+                      <div className="relevance" style={{ color: getSimilarityColor(r.similarity) }}>
+                        <span className="relevance-value">{getSimilarityLabel(r.similarity)}</span>
+                        <span className="relevance-percent">{(r.similarity * 100).toFixed(0)}%</span>
+                      </div>
+                    </div>
+
+                    {/* 본문 */}
+                    <div className="card-content">{r.text}</div>
+
+                    {/* 개별 AI 버튼 */}
+                    <button
+                      className="chunk-ai-btn"
+                      onClick={() => handleChunkAIAnswer(idx, r.text)}
+                      disabled={r.aiLoading}
+                    >
+                      {r.aiLoading ? '생성 중...' : '🤖 이 내용으로 답변 생성'}
+                    </button>
+
+                    {/* 개별 AI 답변 */}
+                    {r.aiAnswer && (
+                      <div className="chunk-answer">
+                        <div className="chunk-answer-title">💡 AI 답변</div>
+                        <div className="chunk-answer-text">{r.aiAnswer}</div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {ragResult && (!ragResult.results || ragResult.results.length === 0) && !loading && (
+              <div className="no-results">관련 문서를 찾을 수 없습니다.</div>
             )}
           </>
         )}
       </main>
 
       <footer className="footer">
-        <p>HuggingFace 임베딩 모델 기반 텍스트 유사도 비교 도구</p>
+        HuggingFace 임베딩 + LLM 기반 RAG 시스템
       </footer>
     </div>
   )

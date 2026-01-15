@@ -1,8 +1,5 @@
-# ============================================
-# Text Similarity Pipeline v2 - Requirements
-# ============================================
-
-# ⚠️ PyTorch는 CUDA 버전에 맞게 먼저 설치!
+# Text Similarity + RAG - Requirements
+# PyTorch는 CUDA 버전에 맞게 먼저 별도 설치
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 # FastAPI Backend
@@ -20,6 +17,11 @@ sentencepiece
 # ML/Computation
 numpy
 scikit-learn
+
+# RAG / Vector Store
+chromadb
+pypdf
+python-docx
 
 # Utils
 python-dotenv
