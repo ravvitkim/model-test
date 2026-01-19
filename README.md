@@ -1,149 +1,132 @@
-# 🔍 텍스트 유사도 비교 - 모델 벤치마크 v2
+# 🔍 텍스트 유사도 + RAG 시스템 v4.0
 
-HuggingFace 임베딩 모델들을 비교할 수 있는 도구
+조항 단위 청킹 + 에이전트 패턴(되묻기) + Ollama 지원
 
-```
-[원문] → [파싱: 품사분석] → [청킹: 의미단위] → [임베딩: 벡터] → [코사인 유사도]
-```
+## ✨ 주요 변경사항 (v4.0)
 
-## ✨ 주요 기능
+### 1. 조항 단위 청킹 (SOP/법률 문서용)
+- `제1조`, `제2조`, `1.`, `가.`, `①` 등 조항 패턴 자동 인식
+- 긴 조항은 설정된 크기로 분할
+- 메타데이터: 문서명, 제목, 섹션, 조항 번호
 
-- **커스텀 모델 지원**: HuggingFace 모델 경로 직접 입력 가능
-- **다중 모델 비교**: 여러 모델을 동시에 돌려서 유사도 비교
-- **성능 측정**: 모델 로드 시간, 추론 시간 표시
+### 2. 에이전트 패턴 (되묻기)
+- 여러 문서에서 유사한 점수로 결과가 나오면 사용자에게 되묻기
+- 예: "손 씻는 방법" → "어떤 SOP의 손 씻는 방법을 원하시나요?"
 
----
+### 3. Ollama 지원 (로컬 LLM)
+- Quantized 모델로 적은 VRAM으로 큰 모델 사용 가능
+- 권장: `qwen2.5:3b` (3GB VRAM)
 
-## 📦 프리셋 모델
+## 🚀 설치
 
-| 구분 | 키 | 모델 |
-|------|-----|------|
-| 🇰🇷 한국어 | `ko-sroberta` | jhgan/ko-sroberta-multitask |
-| 🇰🇷 한국어 | `ko-sbert` | snunlp/KR-SBERT-V40K-klueNLI-augSTS |
-| 🇰🇷 한국어 | `ko-simcse` | BM-K/KoSimCSE-roberta |
-| 🌍 다국어 | `qwen3-0.6b` | Qwen/Qwen3-Embedding-0.6B |
-| 🌍 다국어 | `qwen3-4b` | Qwen/Qwen3-Embedding-4B |
-| 🌍 다국어 | `bge-m3` | BAAI/bge-m3 |
-| 🌍 다국어 | `multilingual-e5` | intfloat/multilingual-e5-large |
-| 🇺🇸 영어 | `mpnet` | sentence-transformers/all-mpnet-base-v2 |
-
-**커스텀 모델 예시:**
-- `intfloat/multilingual-e5-small`
-- `BAAI/bge-base-en-v1.5`
-- `Alibaba-NLP/gte-large-en-v1.5`
-
----
-
-## 🚀 설치 순서
-
-### 1. Backend (터미널 1)
-
+### 1. Python 패키지
 ```bash
-# Conda 환경 생성
-conda create -n similarity python=3.10 -y
-conda activate similarity
+conda create -n rag python=3.10 -y
+conda activate rag
 
-# PyTorch 설치 (CUDA 12.6)
+# PyTorch (CUDA 버전에 맞게)
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
-# 나머지 패키지 설치
+# 나머지 패키지
 pip install -r requirements.txt
+```
 
-# 서버 실행
+### 2. Ollama 설치 (권장)
+```bash
+# macOS / Linux
+curl -fsSL https://ollama.com/install.sh | sh
+
+# 모델 다운로드
+ollama pull qwen2.5:3b   # 3GB, 추천
+ollama pull qwen2.5:7b   # 5GB, 고성능
+
+# 서버 시작
+ollama serve
+```
+
+### 3. 서버 실행
+```bash
 python main.py
 ```
 
-### 2. Frontend (터미널 2)
+## 📡 API 엔드포인트
 
-```bash
-cd frontend
-npm install
-npm run dev
+### RAG
+| 엔드포인트 | 설명 |
+|------------|------|
+| `POST /rag/upload` | 문서 업로드 |
+| `GET /rag/documents` | 문서 목록 |
+| `POST /rag/search` | 벡터 검색 |
+| `POST /rag/ask` | **RAG 질의응답 (되묻기 포함)** |
+| `POST /rag/ask-llm` | RAG 질의응답 (되묻기 없이) |
+| `POST /rag/ask-chunk` | 단일 청크 답변 |
+
+### 시스템
+| 엔드포인트 | 설명 |
+|------------|------|
+| `GET /models/llm` | LLM 모델 목록 (Ollama 상태) |
+| `DELETE /models/cache` | 모델 캐시 클리어 |
+
+## 🔧 청킹 방법
+
+| 방법 | 설명 | 용도 |
+|------|------|------|
+| `article` | 조항 단위 (제1조, 1. 등) | **SOP, 법률 문서 (기본값)** |
+| `sentence` | 문장 단위 | 일반 문서 |
+| `paragraph` | 문단 단위 | 긴 문서 |
+
+## 🤖 LLM 모델
+
+### Ollama (로컬 추천)
+| 모델 | VRAM | 설명 |
+|------|------|------|
+| `qwen2.5:0.5b` | 1GB | 초경량 |
+| `qwen2.5:3b` | 3GB | **추천** |
+| `qwen2.5:7b` | 5GB | 고성능 |
+
+### HuggingFace
+| 모델 | 설명 |
+|------|------|
+| `Qwen/Qwen2.5-0.5B-Instruct` | 초경량 |
+| `Qwen/Qwen2.5-3B-Instruct` | VRAM 6GB+ |
+
+## 💡 에이전트 패턴 (되묻기)
+
+```python
+# 여러 문서에서 비슷한 점수로 결과가 나오면 되묻기
+POST /rag/ask
+{
+    "query": "손 씻는 방법을 알려주세요",
+    "llm_model": "qwen2.5:3b",
+    "llm_backend": "ollama",
+    "check_clarification": true
+}
+
+# 응답 (되묻기 필요 시)
+{
+    "answer": "손 씻는 방법에 대해 여러 SOP에서...",
+    "needs_clarification": true,
+    "clarification_options": ["SOP-001.pdf", "SOP-002.pdf"]
+}
+
+# 특정 문서 선택 후 재요청
+POST /rag/ask
+{
+    "query": "손 씻는 방법을 알려주세요",
+    "filter_doc": "SOP-001.pdf",
+    "check_clarification": false
+}
 ```
-
----
-
-## 🌐 접속
-
-| 서비스 | URL |
-|--------|-----|
-| 프론트엔드 | http://localhost:3000 |
-| API Docs | http://localhost:8000/docs |
-
----
-
-## 📡 API 사용법
-
-### 두 텍스트 비교 (프리셋 모델)
-```bash
-curl -X POST http://localhost:8000/compare \
-  -H "Content-Type: application/json" \
-  -d '{"text1": "인공지능은 미래다", "text2": "AI는 미래 기술이다", "model": "ko-sroberta"}'
-```
-
-### 두 텍스트 비교 (커스텀 모델)
-```bash
-curl -X POST http://localhost:8000/compare \
-  -H "Content-Type: application/json" \
-  -d '{"text1": "인공지능은 미래다", "text2": "AI는 미래 기술이다", "model": "Qwen/Qwen3-Embedding-0.6B"}'
-```
-
-### 여러 모델로 비교
-```bash
-curl -X POST http://localhost:8000/compare/models \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text1": "인공지능은 미래다",
-    "text2": "AI는 미래 기술이다",
-    "models": ["ko-sroberta", "qwen3-0.6b", "Qwen/Qwen3-Embedding-0.6B"]
-  }'
-```
-
-### 모델 캐시 클리어 (메모리 해제)
-```bash
-curl -X DELETE http://localhost:8000/models/cache
-```
-
----
 
 ## 📁 프로젝트 구조
 
 ```
-text-similarity-v2/
-├── main.py              # FastAPI 백엔드
-├── requirements.txt     # Python 패키지
-├── README.md
-└── frontend/
-    ├── src/
-    │   ├── App.tsx      # React (CSS 포함)
-    │   └── main.tsx
-    ├── package.json
-    ├── index.html
-    └── vite.config.ts
+rag/
+├── main.py              # FastAPI 서버
+├── chunker.py           # 청킹 (조항/문장/문단)
+├── document_loader.py   # PDF/DOCX/TXT 로더
+├── vector_store.py      # ChromaDB 벡터 스토어
+├── llm.py               # LLM (Ollama + HuggingFace)
+├── prompt.py            # 프롬프트 템플릿
+└── requirements.txt
 ```
-
----
-
-## ⚠️ CUDA 버전별 PyTorch
-
-```bash
-# CUDA 버전 확인
-nvidia-smi
-
-# CUDA 12.6
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
-
-# CUDA 12.4
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
-
-# CUDA 12.1
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-```
-
----
-
-## 💡 팁
-
-- 모델 첫 로드 시 다운로드가 필요해서 시간이 걸림
-- 한번 로드된 모델은 캐싱되어 빠름
-- 메모리 부족 시 `/models/cache` DELETE로 캐시 클리어
