@@ -391,13 +391,19 @@ def add_documents(
         
         # 메타데이터 구성
         meta = metadata_list[i].copy() if metadata_list and i < len(metadata_list) else {}
-        meta.update({
-            "doc_name": doc_name,
-            "chunk_index": i,
-            "total_chunks": len(chunks),
-            "model": model_name,
-            "char_count": len(chunk),
-        })
+        
+        # SOP 문서 형식이면 지정된 필드 외에는 추가하지 않음
+        if meta.get("doc_type") == "SOP":
+            pass # 이미 chunker에서 11개 필드를 맞춰줌
+        else:
+            meta.update({
+                "doc_name": doc_name,
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+                "model": model_name,
+                "char_count": len(chunk),
+            })
+            
         # None 값 제거 (ChromaDB 호환)
         meta = {k: v for k, v in meta.items() if v is not None}
         

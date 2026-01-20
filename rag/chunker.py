@@ -646,13 +646,16 @@ def create_chunks(
                 index=i,
                 metadata={
                     "chunk_index": i,
-                    "total_chunks": len(raw_chunks),
-                    "chunk_method": "article",
-                    "article_num": chunk_data.get('article_num'),
-                    "article_type": chunk_data.get('article_type'),
+                    "doc_type": "SOP",
+                    "sop_id": chunk_data.get('sop_id', 'SOP-UNKNOWN'),
+                    "sop_name": chunk_data.get('doc_title'),
+                    "version": chunk_data.get('version', '1.0'),
+                    "status": "Effective",
+                    "dept": chunk_data.get('dept', 'Quality Assurance'),
                     "section": chunk_data.get('section'),
-                    "doc_title": chunk_data.get('doc_title'),
-                    "chunk_part": chunk_data.get('chunk_part'),
+                    "article_num": chunk_data.get('article_num'),
+                    "title": chunk_data.get('title'),
+                    "is_gxp": True,
                 }
             ))
         return chunks
@@ -742,12 +745,17 @@ def create_chunks_from_blocks(
                 text=t.strip(),
                 index=idx,
                 metadata={
-                    **doc.metadata,
-                    **block.metadata,
-                    "block_type": block.block_type,
-                    "page": block.page,
+                    "chunk_index": idx,
+                    "doc_type": "SOP",
+                    "sop_id": doc.metadata.get("sop_id"),
+                    "sop_name": doc.metadata.get("title"),
+                    "version": doc.metadata.get("version"),
+                    "status": doc.metadata.get("status", "Effective"),
+                    "dept": doc.metadata.get("dept"),
                     "section": block.section,
-                    "chunk_method": f"block_{method}"
+                    "article_num": block.metadata.get("article_num"),
+                    "title": block.metadata.get("title"),
+                    "is_gxp": doc.metadata.get("is_gxp", True),
                 }
             ))
             idx += 1
