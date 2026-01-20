@@ -413,3 +413,5 @@ HUGGINGFACE_MODELS = [
     {"key": "Qwen/Qwen2.5-3B-Instruct", "name": "Qwen2.5-3B", "desc": "VRAM 6GB+"},
     {"key": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "name": "TinyLlama", "desc": "영어 특화"},
 ]
+
+

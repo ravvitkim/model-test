@@ -1,7 +1,8 @@
 """
-ChromaDB 벡터 스토어 - 임베딩 저장 및 검색
-- 모델별 컬렉션 자동 분리
-- 임베딩 모델 필터링 (dim ≤ 1024, mem ≤ 1300MB) ← NEW
+ChromaDB 벡터 스토어 - 리팩토링 v5.1
+- 유사도 threshold 추가 (낮은 품질 결과 필터링)
+- 검색 품질 지표 추가
+- 코드 구조 개선
 """
 
 import chromadb
@@ -12,20 +13,33 @@ from pathlib import Path
 import hashlib
 import torch
 from transformers import AutoTokenizer, AutoModel, AutoConfig
-
-
-# 기본 설정
-DEFAULT_COLLECTION = "documents"
-CHROMA_PATH = "./chroma_db"
-
-# 전역 변수
-_client = None
-_embed_models = {}
-_device = None
+from dataclasses import dataclass
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 임베딩 모델 스펙 정의 (필터링용) ← NEW
+# 설정 상수
+# ═══════════════════════════════════════════════════════════════════════════
+
+DEFAULT_COLLECTION = "documents"
+CHROMA_PATH = "./chroma_db"
+
+# 검색 품질 설정
+DEFAULT_SIMILARITY_THRESHOLD = 0.35  # 이 이하는 "관련 없음"으로 판단
+HIGH_CONFIDENCE_THRESHOLD = 0.65     # 이 이상은 "신뢰도 높음"
+MIN_RESULTS_BEFORE_FILTER = 3        # 필터링 전 최소 결과 수
+
+# 임베딩 모델 필터링 기준
+MAX_EMBEDDING_DIM = 1024
+MAX_MEMORY_MB = 1300
+
+# 전역 캐시
+_client: Optional[chromadb.PersistentClient] = None
+_embed_models: Dict = {}
+_device: Optional[str] = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 임베딩 모델 스펙 정의
 # ═══════════════════════════════════════════════════════════════════════════
 
 EMBEDDING_MODEL_SPECS = {
@@ -91,7 +105,7 @@ EMBEDDING_MODEL_SPECS = {
         "desc": "영어, 고품질",
     },
     
-    # Qwen Embedding (주의: 크기 확인 필요)
+    # Qwen Embedding
     "Qwen/Qwen3-Embedding-0.6B": {
         "name": "qwen3-0.6b",
         "dim": 1024,
@@ -99,44 +113,74 @@ EMBEDDING_MODEL_SPECS = {
         "lang": "multi",
         "desc": "Qwen 임베딩, 경량",
     },
-    "Qwen/Qwen3-Embedding-4B": {
-        "name": "qwen3-4b",
-        "dim": 2560,  # ⚠️ 조건 초과!
-        "memory_mb": 4000,  # ⚠️ 조건 초과!
-        "lang": "multi",
-        "desc": "⚠️ dim/mem 초과",
-        "warning": True,
-    },
 }
 
-# 필터링 기준
-MAX_EMBEDDING_DIM = 1024
-MAX_MEMORY_MB = 1300
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 검색 결과 데이터 클래스
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class SearchResult:
+    """검색 결과 단일 항목"""
+    text: str
+    similarity: float
+    metadata: Dict
+    id: str
+    confidence: str  # "high", "medium", "low"
+    
+    def to_dict(self) -> Dict:
+        return {
+            "text": self.text,
+            "similarity": self.similarity,
+            "metadata": self.metadata,
+            "id": self.id,
+            "confidence": self.confidence,
+        }
+
+
+@dataclass  
+class SearchResponse:
+    """검색 응답 전체"""
+    results: List[SearchResult]
+    query: str
+    total_found: int
+    filtered_count: int
+    quality_summary: Dict
+    
+    def to_dict(self) -> Dict:
+        return {
+            "results": [r.to_dict() for r in self.results],
+            "query": self.query,
+            "total_found": self.total_found,
+            "filtered_count": self.filtered_count,
+            "quality_summary": self.quality_summary,
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 모델 호환성 검사
+# ═══════════════════════════════════════════════════════════════════════════
 
 def get_model_spec(model_name: str) -> Optional[Dict]:
     """모델 스펙 조회"""
     return EMBEDDING_MODEL_SPECS.get(model_name)
 
 
-def is_model_compatible(model_name: str, max_dim: int = MAX_EMBEDDING_DIM, max_mem: int = MAX_MEMORY_MB) -> Tuple[bool, str]:
-    """
-    모델 호환성 검사 (dim ≤ 1024, mem ≤ 1300MB)
-    
-    Returns:
-        (is_compatible, message)
-    """
+def is_model_compatible(
+    model_name: str, 
+    max_dim: int = MAX_EMBEDDING_DIM, 
+    max_mem: int = MAX_MEMORY_MB
+) -> Tuple[bool, str]:
+    """모델 호환성 검사"""
     spec = get_model_spec(model_name)
     
     if spec is None:
-        # 알려지지 않은 모델은 일단 허용 (경고만)
         return True, f"⚠️ 알 수 없는 모델: {model_name}. 스펙 확인 필요."
     
     issues = []
-    
     if spec['dim'] > max_dim:
         issues.append(f"dim={spec['dim']} > {max_dim}")
-    
     if spec['memory_mb'] > max_mem:
         issues.append(f"memory={spec['memory_mb']}MB > {max_mem}MB")
     
@@ -146,97 +190,44 @@ def is_model_compatible(model_name: str, max_dim: int = MAX_EMBEDDING_DIM, max_m
     return True, f"✅ {model_name} 호환 가능 (dim={spec['dim']}, mem={spec['memory_mb']}MB)"
 
 
-def filter_compatible_models(max_dim: int = MAX_EMBEDDING_DIM, max_mem: int = MAX_MEMORY_MB) -> List[Dict]:
-    """호환 가능한 모델 목록 필터링"""
+def filter_compatible_models(
+    max_dim: int = MAX_EMBEDDING_DIM, 
+    max_mem: int = MAX_MEMORY_MB
+) -> List[Dict]:
+    """호환 가능한 모델 목록"""
     compatible = []
-    
     for model_path, spec in EMBEDDING_MODEL_SPECS.items():
         if spec['dim'] <= max_dim and spec['memory_mb'] <= max_mem:
-            compatible.append({
-                "path": model_path,
-                **spec
-            })
-    
-    # 메모리 순 정렬
+            compatible.append({"path": model_path, **spec})
     compatible.sort(key=lambda x: x['memory_mb'])
     return compatible
 
 
 def get_embedding_model_info() -> Dict:
-    """임베딩 모델 전체 정보 (프론트엔드용)"""
+    """임베딩 모델 전체 정보"""
     all_models = []
-    compatible_models = []
-    incompatible_models = []
+    compatible = []
+    incompatible = []
     
     for model_path, spec in EMBEDDING_MODEL_SPECS.items():
-        model_info = {
-            "path": model_path,
-            **spec,
-            "compatible": spec['dim'] <= MAX_EMBEDDING_DIM and spec['memory_mb'] <= MAX_MEMORY_MB
-        }
+        is_compat = spec['dim'] <= MAX_EMBEDDING_DIM and spec['memory_mb'] <= MAX_MEMORY_MB
+        model_info = {"path": model_path, **spec, "compatible": is_compat}
         all_models.append(model_info)
-        
-        if model_info['compatible']:
-            compatible_models.append(model_info)
-        else:
-            incompatible_models.append(model_info)
+        (compatible if is_compat else incompatible).append(model_info)
     
     return {
         "all": all_models,
-        "compatible": compatible_models,
-        "incompatible": incompatible_models,
-        "filter_criteria": {
-            "max_dim": MAX_EMBEDDING_DIM,
-            "max_memory_mb": MAX_MEMORY_MB,
-        }
+        "compatible": compatible,
+        "incompatible": incompatible,
+        "filter_criteria": {"max_dim": MAX_EMBEDDING_DIM, "max_memory_mb": MAX_MEMORY_MB}
     }
-
-
-def auto_detect_model_spec(model_name: str) -> Optional[Dict]:
-    """
-    HuggingFace에서 모델 스펙 자동 감지
-    (알려지지 않은 모델용)
-    """
-    try:
-        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
-        
-        # hidden_size 추출 (임베딩 차원)
-        dim = getattr(config, 'hidden_size', None)
-        if dim is None:
-            dim = getattr(config, 'd_model', None)
-        
-        # 파라미터 수로 메모리 추정 (대략 4bytes per param)
-        num_params = getattr(config, 'num_parameters', None)
-        if num_params is None:
-            # 모델 로드해서 확인
-            try:
-                model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-                num_params = sum(p.numel() for p in model.parameters())
-                del model
-                torch.cuda.empty_cache()
-            except:
-                num_params = None
-        
-        memory_mb = int(num_params * 4 / 1024 / 1024) if num_params else None
-        
-        return {
-            "name": model_name.split("/")[-1],
-            "dim": dim,
-            "memory_mb": memory_mb,
-            "lang": "unknown",
-            "desc": "자동 감지",
-            "auto_detected": True,
-        }
-    except Exception as e:
-        print(f"⚠️ 모델 스펙 자동 감지 실패: {e}")
-        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 기본 유틸리티
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_device():
+def get_device() -> str:
     """디바이스 확인"""
     global _device
     if _device is None:
@@ -253,45 +244,44 @@ def get_client() -> chromadb.PersistentClient:
     return _client
 
 
-def get_embedding_model(model_name: str = "jhgan/ko-sroberta-multitask", check_compatibility: bool = True):
-    """
-    임베딩 모델 로드 (모델별 캐싱)
-    
-    Args:
-        model_name: 모델 경로
-        check_compatibility: 호환성 검사 여부
-    """
+def get_embedding_model(
+    model_name: str = "jhgan/ko-sroberta-multitask",
+    check_compatibility: bool = True
+):
+    """임베딩 모델 로드 (캐싱)"""
     global _embed_models
-    
-    # 호환성 검사
-    if check_compatibility:
-        is_ok, msg = is_model_compatible(model_name)
-        print(msg)
-        if not is_ok:
-            raise ValueError(f"모델 호환성 오류: {msg}")
     
     if model_name in _embed_models:
         return _embed_models[model_name]
     
-    print(f"📦 임베딩 모델 로딩: {model_name}")
+    # 호환성 검사
+    if check_compatibility:
+        is_ok, msg = is_model_compatible(model_name)
+        if not is_ok:
+            raise ValueError(msg)
+        print(msg)
+    
+    print(f"📦 Loading embedding model: {model_name}...")
+    device = get_device()
+    
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(get_device())
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
     model.eval()
-    print(f"✅ 모델 로드 완료: {model_name} (device: {get_device()})")
     
     _embed_models[model_name] = (tokenizer, model)
+    print(f"✅ Embedding model loaded: {model_name}")
     return tokenizer, model
 
 
-def get_collection_name_for_model(base_name: str, model_name: str) -> str:
-    """모델별 컬렉션 이름 생성"""
-    safe_model = model_name.split("/")[-1].replace("-", "_").replace(".", "_")
-    return f"{base_name}__{safe_model}"
-
-
 def embed_text(text: str, model_name: str = "jhgan/ko-sroberta-multitask") -> List[float]:
-    """텍스트를 임베딩 벡터로 변환"""
+    """텍스트 임베딩 생성"""
     tokenizer, model = get_embedding_model(model_name)
+    device = get_device()
+    
+    # 텍스트 길이 제한 (토큰화 전)
+    MAX_CHARS = 1500
+    if len(text) > MAX_CHARS:
+        text = text[:MAX_CHARS]
     
     inputs = tokenizer(
         text,
@@ -299,12 +289,12 @@ def embed_text(text: str, model_name: str = "jhgan/ko-sroberta-multitask") -> Li
         truncation=True,
         max_length=512,
         return_tensors="pt"
-    ).to(get_device())
+    ).to(device)
     
     with torch.no_grad():
         outputs = model(**inputs)
     
-    # Mean Pooling
+    # Mean pooling
     attention_mask = inputs['attention_mask']
     token_embeddings = outputs.last_hidden_state
     input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
@@ -315,72 +305,67 @@ def embed_text(text: str, model_name: str = "jhgan/ko-sroberta-multitask") -> Li
     return embedding[0].tolist()
 
 
-def embed_texts(texts: List[str], model_name: str = "jhgan/ko-sroberta-multitask") -> List[List[float]]:
-    """여러 텍스트를 임베딩"""
-    return [embed_text(text, model_name) for text in texts]
-
-
-def generate_doc_id(text: str, doc_name: str = "") -> str:
+def generate_doc_id(text: str, prefix: str = "") -> str:
     """문서 ID 생성"""
-    content = f"{doc_name}:{text[:100]}"
-    return hashlib.md5(content.encode()).hexdigest()[:16]
+    hash_val = hashlib.md5(text.encode()).hexdigest()[:12]
+    return f"{prefix}_{hash_val}" if prefix else hash_val
+
+
+def get_collection_name_for_model(base_name: str, model_name: str) -> str:
+    """모델별 컬렉션 이름 생성"""
+    model_suffix = model_name.replace("/", "_").replace("-", "_")
+    return f"{base_name}__{model_suffix}"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 컬렉션 관리
 # ═══════════════════════════════════════════════════════════════════════════
 
-def create_collection(name: str, model_name: str = None) -> chromadb.Collection:
-    """컬렉션 생성 또는 가져오기"""
+def create_collection(
+    collection_name: str = DEFAULT_COLLECTION,
+    model_name: str = "jhgan/ko-sroberta-multitask"
+):
+    """컬렉션 생성/가져오기"""
     client = get_client()
-    
-    if model_name:
-        name = get_collection_name_for_model(name, model_name)
-    
+    actual_name = get_collection_name_for_model(collection_name, model_name)
     return client.get_or_create_collection(
-        name=name,
-        metadata={"hnsw:space": "cosine"}
+        name=actual_name,
+        metadata={"hnsw:space": "cosine", "embedding_model": model_name}
     )
 
 
-def delete_collection(name: str) -> bool:
+def list_collections() -> List[str]:
+    """모든 컬렉션 목록"""
+    client = get_client()
+    return [c.name for c in client.list_collections()]
+
+
+def get_collection_info(collection_name: str) -> Dict:
+    """컬렉션 정보"""
+    try:
+        client = get_client()
+        collection = client.get_collection(name=collection_name)
+        return {
+            "name": collection_name,
+            "count": collection.count(),
+            "metadata": collection.metadata
+        }
+    except Exception:
+        return {"name": collection_name, "count": 0, "error": "not found"}
+
+
+def delete_collection(collection_name: str) -> bool:
     """컬렉션 삭제"""
     try:
         client = get_client()
-        client.delete_collection(name=name)
+        client.delete_collection(name=collection_name)
         return True
     except Exception:
         return False
 
 
-def list_collections() -> List[str]:
-    """컬렉션 목록"""
-    client = get_client()
-    return [col.name for col in client.list_collections()]
-
-
-def get_collection_info(name: str) -> Dict:
-    """컬렉션 정보"""
-    try:
-        client = get_client()
-        collection = client.get_collection(name=name)
-        
-        model_info = "unknown"
-        if "__" in name:
-            model_info = name.split("__")[-1]
-        
-        return {
-            "name": name,
-            "count": collection.count(),
-            "model": model_info,
-            "metadata": collection.metadata
-        }
-    except Exception as e:
-        return {"name": name, "error": str(e)}
-
-
 # ═══════════════════════════════════════════════════════════════════════════
-# 문서 추가
+# 문서 저장
 # ═══════════════════════════════════════════════════════════════════════════
 
 def add_documents(
@@ -390,37 +375,29 @@ def add_documents(
     model_name: str = "jhgan/ko-sroberta-multitask",
     metadata_list: Optional[List[Dict]] = None
 ) -> Dict:
-    """문서 청크들을 ChromaDB에 저장 (모델별 컬렉션)"""
+    """문서 청크들을 ChromaDB에 저장"""
     
-    actual_collection_name = get_collection_name_for_model(collection_name, model_name)
     collection = create_collection(collection_name, model_name)
+    actual_collection_name = get_collection_name_for_model(collection_name, model_name)
     
-    ids = []
-    embeddings = []
-    metadatas = []
-    documents = []
+    ids, embeddings, metadatas, documents = [], [], [], []
     
     for i, chunk in enumerate(chunks):
         if not chunk.strip():
             continue
-            
+        
         doc_id = generate_doc_id(chunk, f"{doc_name}_{i}")
         embedding = embed_text(chunk, model_name)
         
-        # 메타데이터 가져오기 또는 생성
-        if metadata_list and i < len(metadata_list):
-            meta = metadata_list[i].copy()
-        else:
-            meta = {
-                "doc_name": doc_name,
-                "chunk_index": i,
-                "total_chunks": len(chunks)
-            }
-        
-        # 필수 필드 보장
-        meta["doc_name"] = meta.get("doc_name", doc_name)
-        meta["model"] = model_name
-        
+        # 메타데이터 구성
+        meta = metadata_list[i].copy() if metadata_list and i < len(metadata_list) else {}
+        meta.update({
+            "doc_name": doc_name,
+            "chunk_index": i,
+            "total_chunks": len(chunks),
+            "model": model_name,
+            "char_count": len(chunk),
+        })
         # None 값 제거 (ChromaDB 호환)
         meta = {k: v for k, v in meta.items() if v is not None}
         
@@ -457,18 +434,58 @@ def add_single_text(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 검색
+# 검색 (핵심 개선!)
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _classify_confidence(similarity: float) -> str:
+    """유사도 기반 신뢰도 분류"""
+    if similarity >= HIGH_CONFIDENCE_THRESHOLD:
+        return "high"
+    elif similarity >= DEFAULT_SIMILARITY_THRESHOLD:
+        return "medium"
+    return "low"
+
+
+def _calculate_quality_summary(results: List[SearchResult]) -> Dict:
+    """검색 품질 요약 계산"""
+    if not results:
+        return {"avg_similarity": 0, "high_count": 0, "medium_count": 0, "low_count": 0}
+    
+    similarities = [r.similarity for r in results]
+    return {
+        "avg_similarity": round(sum(similarities) / len(similarities), 4),
+        "max_similarity": round(max(similarities), 4),
+        "min_similarity": round(min(similarities), 4),
+        "high_count": sum(1 for r in results if r.confidence == "high"),
+        "medium_count": sum(1 for r in results if r.confidence == "medium"),
+        "low_count": sum(1 for r in results if r.confidence == "low"),
+    }
+
 
 def search(
     query: str,
     collection_name: str = DEFAULT_COLLECTION,
     n_results: int = 5,
     model_name: str = "jhgan/ko-sroberta-multitask",
-    filter_doc: str = None
+    filter_doc: Optional[str] = None,
+    similarity_threshold: Optional[float] = None,
+    return_low_confidence: bool = True,
 ) -> List[Dict]:
-    """유사 문서 검색 (모델별 컬렉션)"""
+    """
+    유사 문서 검색 (개선된 버전)
     
+    Args:
+        query: 검색 쿼리
+        collection_name: 컬렉션 이름
+        n_results: 반환할 결과 수
+        model_name: 임베딩 모델
+        filter_doc: 특정 문서만 검색
+        similarity_threshold: 최소 유사도 (None이면 기본값 사용)
+        return_low_confidence: False면 낮은 신뢰도 결과 제외
+    
+    Returns:
+        검색 결과 리스트 (dict 형태)
+    """
     actual_collection_name = get_collection_name_for_model(collection_name, model_name)
     
     try:
@@ -480,35 +497,51 @@ def search(
     if collection.count() == 0:
         return []
     
+    # 쿼리 임베딩
     query_embedding = embed_text(query, model_name)
     
     # 필터 설정
-    where_filter = None
-    if filter_doc:
-        where_filter = {"doc_name": filter_doc}
+    where_filter = {"doc_name": filter_doc} if filter_doc else None
+    
+    # 더 많이 가져와서 필터링 (품질 향상)
+    fetch_count = min(n_results * 2, collection.count())
     
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(n_results, collection.count()),
+        n_results=fetch_count,
         where=where_filter,
         include=["documents", "metadatas", "distances"]
     )
     
+    # 결과 변환 및 필터링
+    threshold = similarity_threshold if similarity_threshold is not None else DEFAULT_SIMILARITY_THRESHOLD
     search_results = []
     
     if results['documents'] and results['documents'][0]:
         for i, doc in enumerate(results['documents'][0]):
             distance = results['distances'][0][i] if results['distances'] else 0
-            similarity = 1 - distance
+            similarity = max(0, min(1, 1 - distance))  # [0, 1] 범위로 클램핑
+            
+            confidence = _classify_confidence(similarity)
+            
+            # 낮은 신뢰도 필터링
+            if not return_low_confidence and confidence == "low":
+                continue
+            
+            # threshold 미만 필터링 (단, 최소 결과는 보장)
+            if similarity < threshold and len(search_results) >= MIN_RESULTS_BEFORE_FILTER:
+                continue
             
             search_results.append({
                 "text": doc,
-                "similarity": round(max(0, min(1, similarity)), 4),
+                "similarity": round(similarity, 4),
                 "metadata": results['metadatas'][0][i] if results['metadatas'] else {},
-                "id": results['ids'][0][i] if results['ids'] else None
+                "id": results['ids'][0][i] if results['ids'] else None,
+                "confidence": confidence,
             })
     
-    return search_results
+    # 요청한 개수만큼 반환
+    return search_results[:n_results]
 
 
 def search_with_context(
@@ -516,29 +549,49 @@ def search_with_context(
     collection_name: str = DEFAULT_COLLECTION,
     n_results: int = 3,
     model_name: str = "jhgan/ko-sroberta-multitask",
-    filter_doc: str = None
+    filter_doc: Optional[str] = None,
+    similarity_threshold: Optional[float] = None,
 ) -> Tuple[List[Dict], str]:
-    """검색 + 컨텍스트 생성"""
-    results = search(query, collection_name, n_results, model_name, filter_doc)
+    """검색 + 컨텍스트 문자열 생성"""
+    
+    results = search(
+        query=query,
+        collection_name=collection_name,
+        n_results=n_results,
+        model_name=model_name,
+        filter_doc=filter_doc,
+        similarity_threshold=similarity_threshold,
+        return_low_confidence=True,  # 컨텍스트 생성시에는 일단 포함
+    )
     
     context_parts = []
     for i, r in enumerate(results):
         meta = r.get('metadata', {})
+        confidence = r.get('confidence', 'medium')
         
-        # 조항 정보 포함
-        header = f"[문서 {i+1}]"
-        if meta.get('doc_name'):
-            header = f"[{meta['doc_name']}"
-            if meta.get('article_num'):
-                article_type = meta.get('article_type', 'article')
-                if article_type == 'article':
-                    header += f" - 제{meta['article_num']}조"
-                elif article_type == 'chapter':
-                    header += f" - 제{meta['article_num']}장"
-                else:
-                    header += f" - {meta['article_num']}"
-            header += f"] (유사도: {r['similarity']:.1%})"
+        # 헤더 구성
+        header_parts = []
         
+        # 문서명
+        doc_name = meta.get('doc_name', f'문서 {i+1}')
+        header_parts.append(doc_name)
+        
+        # 조항 정보
+        article_num = meta.get('article_num')
+        article_type = meta.get('article_type', 'article')
+        if article_num:
+            if article_type == 'article':
+                header_parts.append(f"제{article_num}조")
+            elif article_type == 'chapter':
+                header_parts.append(f"제{article_num}장")
+            else:
+                header_parts.append(str(article_num))
+        
+        # 유사도 및 신뢰도
+        sim_str = f"{r['similarity']:.1%}"
+        conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(confidence, "⚪")
+        
+        header = f"[{' - '.join(header_parts)}] ({sim_str} {conf_emoji})"
         context_parts.append(f"{header}\n{r['text']}")
     
     context = "\n\n---\n\n".join(context_parts)
@@ -546,14 +599,67 @@ def search_with_context(
     return results, context
 
 
+def search_advanced(
+    query: str,
+    collection_name: str = DEFAULT_COLLECTION,
+    n_results: int = 5,
+    model_name: str = "jhgan/ko-sroberta-multitask",
+    filter_doc: Optional[str] = None,
+    similarity_threshold: Optional[float] = None,
+) -> SearchResponse:
+    """고급 검색 (품질 메트릭 포함)"""
+    
+    # 더 많이 가져와서 분석
+    all_results = search(
+        query=query,
+        collection_name=collection_name,
+        n_results=n_results * 2,
+        model_name=model_name,
+        filter_doc=filter_doc,
+        similarity_threshold=0.0,  # 일단 다 가져옴
+        return_low_confidence=True,
+    )
+    
+    # SearchResult 객체로 변환
+    result_objects = [
+        SearchResult(
+            text=r['text'],
+            similarity=r['similarity'],
+            metadata=r['metadata'],
+            id=r['id'],
+            confidence=r['confidence']
+        )
+        for r in all_results
+    ]
+    
+    # threshold 적용 필터링
+    threshold = similarity_threshold or DEFAULT_SIMILARITY_THRESHOLD
+    filtered = [r for r in result_objects if r.similarity >= threshold]
+    
+    # 최소 결과 보장
+    if len(filtered) < MIN_RESULTS_BEFORE_FILTER:
+        filtered = result_objects[:MIN_RESULTS_BEFORE_FILTER]
+    
+    # 요청 개수로 제한
+    final_results = filtered[:n_results]
+    
+    return SearchResponse(
+        results=final_results,
+        query=query,
+        total_found=len(all_results),
+        filtered_count=len(filtered),
+        quality_summary=_calculate_quality_summary(final_results)
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 문서 삭제
 # ═══════════════════════════════════════════════════════════════════════════
 
 def delete_by_doc_name(
-    doc_name: str, 
+    doc_name: str,
     collection_name: str = DEFAULT_COLLECTION,
-    model_name: str = None
+    model_name: Optional[str] = None
 ) -> Dict:
     """문서 이름으로 삭제"""
     
@@ -566,10 +672,11 @@ def delete_by_doc_name(
             if results['ids']:
                 collection.delete(ids=results['ids'])
                 return {"success": True, "deleted": len(results['ids']), "collection": actual_name}
-        except:
+        except Exception:
             pass
         return {"success": False, "message": "문서를 찾을 수 없음"}
     
+    # 모든 관련 컬렉션에서 삭제
     deleted_total = 0
     for col_name in list_collections():
         if col_name.startswith(collection_name + "__"):
@@ -580,7 +687,7 @@ def delete_by_doc_name(
                 if results['ids']:
                     collection.delete(ids=results['ids'])
                     deleted_total += len(results['ids'])
-            except:
+            except Exception:
                 continue
     
     if deleted_total > 0:
@@ -588,7 +695,10 @@ def delete_by_doc_name(
     return {"success": False, "message": "문서를 찾을 수 없음"}
 
 
-def delete_all(collection_name: str = DEFAULT_COLLECTION, model_name: str = None) -> Dict:
+def delete_all(
+    collection_name: str = DEFAULT_COLLECTION,
+    model_name: Optional[str] = None
+) -> Dict:
     """컬렉션 내 모든 문서 삭제"""
     try:
         if model_name:
@@ -611,7 +721,10 @@ def delete_all(collection_name: str = DEFAULT_COLLECTION, model_name: str = None
 # 문서 목록
 # ═══════════════════════════════════════════════════════════════════════════
 
-def list_documents(collection_name: str = DEFAULT_COLLECTION, model_name: str = None) -> List[Dict]:
+def list_documents(
+    collection_name: str = DEFAULT_COLLECTION,
+    model_name: Optional[str] = None
+) -> List[Dict]:
     """저장된 문서 목록"""
     
     docs = {}
@@ -620,7 +733,7 @@ def list_documents(collection_name: str = DEFAULT_COLLECTION, model_name: str = 
         target_collections = [get_collection_name_for_model(collection_name, model_name)]
     else:
         target_collections = [
-            col for col in list_collections() 
+            col for col in list_collections()
             if col.startswith(collection_name + "__") or col == collection_name
         ]
     
@@ -645,7 +758,7 @@ def list_documents(collection_name: str = DEFAULT_COLLECTION, model_name: str = 
                         "chunk_method": meta.get('chunk_method'),
                     }
                 docs[key]["chunk_count"] += 1
-        except:
+        except Exception:
             continue
     
     return list(docs.values())

@@ -12,7 +12,7 @@ import re
 from typing import List, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 import numpy as np
-
+from .parser import ParsedDocument
 
 @dataclass
 class Chunk:
@@ -68,7 +68,7 @@ def extract_document_title(text: str) -> str:
 # 1. 문장 단위 청킹 (기존)
 # ═══════════════════════════════════════════════════════════════════════════
 
-def split_by_sentences(text: str, max_length: int = 500, overlap: int = 50) -> List[str]:
+def split_by_sentences(text: str, max_length: int = 300, overlap: int = 50) -> List[str]:
     """문장 단위로 분할 후 max_length 이내로 묶기"""
     sentences = re.split(r'(?<=[.!?。])\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -198,7 +198,7 @@ def split_long_article(text: str, max_length: int, overlap: int = 50) -> List[st
     return split_by_sentences(text, max_length=max_length, overlap=overlap)
 
 
-def chunk_by_articles(text: str, max_length: int = 500, overlap: int = 50) -> List[dict]:
+def chunk_by_articles(text: str, max_length: int = 300, overlap: int = 50) -> List[dict]:
     """조항 단위 청킹"""
     doc_title = extract_document_title(text)
     articles = split_by_articles(text)
@@ -261,7 +261,7 @@ class RecursiveCharacterTextSplitter:
     
     def __init__(
         self,
-        chunk_size: int = 500,
+        chunk_size: int = 300,
         chunk_overlap: int = 50,
         separators: List[str] = None,
         keep_separator: bool = True,
@@ -373,7 +373,7 @@ class RecursiveCharacterTextSplitter:
         return overlap_splits
 
 
-def split_recursive(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+def split_recursive(text: str, chunk_size: int = 300, overlap: int = 50) -> List[str]:
     """RecursiveCharacterTextSplitter 간편 함수"""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -490,7 +490,7 @@ def split_semantic(
     text: str, 
     embed_function: Callable = None,
     threshold: float = 0.5,
-    max_chunk_size: int = 500
+    max_chunk_size: int = 300
 ) -> List[str]:
     """SemanticSplitter 간편 함수"""
     splitter = SemanticSplitter(
@@ -519,7 +519,7 @@ JSON 응답만 반환하세요:"""
 def split_by_llm(
     text: str,
     llm_function: Callable[[str], str] = None,
-    max_chunk_size: int = 500,
+    max_chunk_size: int = 300,
     fallback_method: str = "recursive"
 ) -> List[dict]:
     """
@@ -616,7 +616,7 @@ CHUNK_METHODS = {
 
 def create_chunks(
     text: str, 
-    chunk_size: int = 500, 
+    chunk_size: int = 300, 
     overlap: int = 50,
     method: str = "sentence",
     embed_function: Callable = None,
@@ -715,6 +715,45 @@ def create_chunks(
             ))
     
     return chunks
+
+def create_chunks_from_blocks(
+    doc: ParsedDocument,
+    chunk_size: int = 300,
+    overlap: int = 50,
+    method: str = "recursive"
+) -> List[Chunk]:
+    """
+    block 기반 청킹 (메타데이터 유지)
+    """
+    chunks: List[Chunk] = []
+    idx = 0
+
+    for block in doc.blocks:
+        if method == "recursive":
+            texts = split_recursive(block.text, chunk_size, overlap)
+        else:
+            texts = [block.text]
+
+        for t in texts:
+            if not t.strip():
+                continue
+
+            chunks.append(Chunk(
+                text=t.strip(),
+                index=idx,
+                metadata={
+                    **doc.metadata,
+                    **block.metadata,
+                    "block_type": block.block_type,
+                    "page": block.page,
+                    "section": block.section,
+                    "chunk_method": f"block_{method}"
+                }
+            ))
+            idx += 1
+
+    return chunks
+
 
 
 def get_available_methods() -> dict:

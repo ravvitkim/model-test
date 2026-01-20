@@ -1,221 +1,176 @@
 """
-문서 로더 - 다양한 파일 형식 지원
+문서 로더 + 파싱 진입점 (수정됨)
+- ContentBlock import 추가
+- 파일 타입별 최적화 파싱
 """
 
-import re
 from pathlib import Path
 from typing import Optional
+from .parser import (
+    ParsedDocument,
+    ContentBlock,  # 추가!
+    parse_plain_text,
+    parse_articles,
+)
 
 
 def get_supported_extensions() -> list:
-    """지원되는 파일 확장자 목록"""
     return [".txt", ".md", ".pdf", ".docx", ".doc", ".hwp", ".html", ".csv"]
 
 
-def load_document(filename: str, content: bytes) -> str:
+def load_document(filename: str, content: bytes) -> ParsedDocument:
     """
-    파일 내용을 텍스트로 변환
-    
-    Args:
-        filename: 파일명
-        content: 파일 바이트 내용
+    문서 로드 및 파싱 (메인 진입점)
     
     Returns:
-        추출된 텍스트
+        ParsedDocument: 파싱된 문서 (text + blocks + metadata)
     """
     ext = Path(filename).suffix.lower()
-    
+
     if ext in [".txt", ".md"]:
-        return _load_text(content)
-    
+        text = _decode_text(content)
+        # SOP/법률 패턴 감지 시 조항 파싱
+        if _is_article_document(text):
+            return parse_articles(text, filename, ext)
+        return parse_plain_text(text, filename, ext)
+
     elif ext == ".pdf":
-        return _load_pdf(content)
-    
+        return _load_pdf(filename, content)
+
     elif ext in [".docx", ".doc"]:
-        return _load_docx(content)
-    
-    elif ext == ".hwp":
-        return _load_hwp(content)
-    
+        text = _load_docx(content)
+        if _is_article_document(text):
+            return parse_articles(text, filename, ext)
+        return parse_plain_text(text, filename, ext)
+
     elif ext == ".html":
-        return _load_html(content)
-    
+        text = _load_html(content)
+        return parse_plain_text(text, filename, ext)
+
     elif ext == ".csv":
-        return _load_csv(content)
-    
+        text = _load_csv(content)
+        return parse_plain_text(text, filename, ext)
+
     else:
-        # 기본: UTF-8 텍스트로 시도
-        try:
-            return content.decode("utf-8")
-        except:
-            return content.decode("cp949", errors="ignore")
+        text = _decode_text(content)
+        return parse_plain_text(text, filename, ext)
 
 
-def _load_text(content: bytes) -> str:
-    """텍스트 파일 로드"""
-    try:
-        return content.decode("utf-8")
-    except:
-        return content.decode("cp949", errors="ignore")
-
-
-def _load_pdf(content: bytes) -> str:
-    """PDF 파일 로드"""
-    try:
-        import fitz  # PyMuPDF
-        
-        doc = fitz.open(stream=content, filetype="pdf")
-        text_parts = []
-        
-        for page in doc:
-            text_parts.append(page.get_text())
-        
-        doc.close()
-        return "\n".join(text_parts)
+def _is_article_document(text: str) -> bool:
+    """조항 기반 문서인지 감지 (SOP, 법률 등)"""
+    import re
     
-    except ImportError:
+    # 조항 패턴 카운트
+    patterns = [
+        r'제\s*\d+\s*조',   # 제1조
+        r'제\s*\d+\s*장',   # 제1장
+        r'제\s*\d+\s*절',   # 제1절
+        r'^\d+\.\d+',       # 1.1
+        r'^SOP[-_]?\d+',    # SOP-001
+    ]
+    
+    count = 0
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.MULTILINE)
+        count += len(matches)
+    
+    # 3개 이상의 조항 패턴이 있으면 조항 문서로 판단
+    return count >= 3
+
+
+def _decode_text(content: bytes) -> str:
+    """바이트 → 텍스트 디코딩"""
+    for encoding in ["utf-8", "cp949", "euc-kr", "latin-1"]:
         try:
-            # 대체: pdfplumber
-            import pdfplumber
-            import io
-            
-            with pdfplumber.open(io.BytesIO(content)) as pdf:
-                text_parts = []
-                for page in pdf.pages:
-                    text = page.extract_text()
-                    if text:
-                        text_parts.append(text)
-                return "\n".join(text_parts)
-        
-        except ImportError:
-            raise ImportError("PDF 처리를 위해 'pip install pymupdf' 또는 'pip install pdfplumber' 설치 필요")
+            return content.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return content.decode("utf-8", errors="ignore")
+
+
+def _load_pdf(filename: str, content: bytes) -> ParsedDocument:
+    """PDF 파싱 (페이지 메타데이터 포함)"""
+    import fitz  # pymupdf
+
+    doc = fitz.open(stream=content, filetype="pdf")
+    blocks = []
+    all_text = []
+
+    for page_idx, page in enumerate(doc):
+        text = page.get_text().strip()
+        if text:
+            blocks.append(
+                ContentBlock(
+                    text=text,
+                    block_type="page",
+                    page=page_idx + 1,
+                    metadata={"source": "pdf"}
+                )
+            )
+            all_text.append(text)
+
+    full_text = "\n\n".join(all_text)
+    
+    return ParsedDocument(
+        text=full_text,
+        blocks=blocks,
+        metadata={
+            "file_name": filename,
+            "file_type": "pdf",
+            "total_pages": len(doc),
+            "title": _extract_title_from_text(full_text),
+        }
+    )
 
 
 def _load_docx(content: bytes) -> str:
-    """DOCX 파일 로드"""
-    try:
-        from docx import Document
-        import io
-        
-        doc = Document(io.BytesIO(content))
-        text_parts = []
-        
-        for para in doc.paragraphs:
-            if para.text.strip():
-                text_parts.append(para.text)
-        
-        # 테이블 내용도 추출
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
-                if row_text:
-                    text_parts.append(" | ".join(row_text))
-        
-        return "\n".join(text_parts)
-    
-    except ImportError:
-        raise ImportError("DOCX 처리를 위해 'pip install python-docx' 설치 필요")
+    """DOCX 파싱"""
+    from docx import Document
+    import io
 
+    doc = Document(io.BytesIO(content))
+    parts = []
 
-def _load_hwp(content: bytes) -> str:
-    """HWP 파일 로드"""
-    try:
-        import olefile
-        import zlib
-        import io
-        
-        ole = olefile.OleFileIO(io.BytesIO(content))
-        
-        # HWP 본문 스트림
-        if ole.exists("BodyText/Section0"):
-            encoded = ole.openstream("BodyText/Section0").read()
-            
-            # 압축 해제
-            try:
-                decoded = zlib.decompress(encoded, -15)
-            except:
-                decoded = encoded
-            
-            # 텍스트 추출 (간단한 방법)
-            text = decoded.decode("utf-16-le", errors="ignore")
-            
-            # 제어 문자 제거
-            text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
-            
-            ole.close()
-            return text
-        
-        ole.close()
-        return ""
-    
-    except ImportError:
-        raise ImportError("HWP 처리를 위해 'pip install olefile' 설치 필요")
-    except Exception as e:
-        return f"HWP 파일 로드 오류: {str(e)}"
+    for p in doc.paragraphs:
+        if p.text.strip():
+            parts.append(p.text.strip())
+
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [c.text.strip() for c in row.cells if c.text.strip()]
+            if cells:
+                parts.append(" | ".join(cells))
+
+    return "\n\n".join(parts)
 
 
 def _load_html(content: bytes) -> str:
-    """HTML 파일 로드"""
-    try:
-        from bs4 import BeautifulSoup
-        
-        try:
-            html_text = content.decode("utf-8")
-        except:
-            html_text = content.decode("cp949", errors="ignore")
-        
-        soup = BeautifulSoup(html_text, "html.parser")
-        
-        # 스크립트, 스타일 태그 제거
-        for script in soup(["script", "style"]):
-            script.decompose()
-        
-        text = soup.get_text(separator="\n")
-        
-        # 연속 공백 정리
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return "\n".join(lines)
-    
-    except ImportError:
-        # BeautifulSoup 없으면 간단한 정규식으로
-        try:
-            html_text = content.decode("utf-8")
-        except:
-            html_text = content.decode("cp949", errors="ignore")
-        
-        # 태그 제거
-        text = re.sub(r'<[^>]+>', '', html_text)
-        return text
+    """HTML 파싱"""
+    from bs4 import BeautifulSoup
+
+    html = _decode_text(content)
+    soup = BeautifulSoup(html, "html.parser")
+
+    for tag in soup(["script", "style"]):
+        tag.decompose()
+
+    lines = [l.strip() for l in soup.get_text("\n").splitlines() if l.strip()]
+    return "\n".join(lines)
 
 
 def _load_csv(content: bytes) -> str:
-    """CSV 파일 로드"""
-    try:
-        text = content.decode("utf-8")
-    except:
-        text = content.decode("cp949", errors="ignore")
-    
-    # CSV를 읽기 쉬운 형태로 변환
-    lines = text.strip().split("\n")
-    formatted = []
-    
-    for line in lines:
-        # 간단한 CSV 파싱
-        cells = line.split(",")
-        formatted.append(" | ".join(cell.strip().strip('"') for cell in cells))
-    
-    return "\n".join(formatted)
+    """CSV 파싱"""
+    text = _decode_text(content)
+    lines = text.splitlines()
+    return "\n".join(" | ".join(c.strip('" ') for c in l.split(",")) for l in lines)
 
 
-def clean_text(text: str) -> str:
-    """텍스트 정리"""
-    # 연속 공백을 단일 공백으로
-    text = re.sub(r' +', ' ', text)
-    
-    # 연속 줄바꿈을 최대 2개로
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    
-    # 앞뒤 공백 제거
-    text = text.strip()
-    
-    return text
+def _extract_title_from_text(text: str) -> str:
+    """텍스트에서 제목 추출"""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    for line in lines[:5]:
+        if line.lower().startswith(("title:", "제목:")):
+            return line.split(":", 1)[1].strip()
+        if len(line) > 5:
+            return line[:100]
+    return "제목 없음"

@@ -36,21 +36,44 @@ interface MatrixResult {
   model_used: string
 }
 
+// 메타데이터 타입 (확장됨) ← UPDATED
+interface ChunkMetadata {
+  doc_name: string
+  doc_title?: string
+  chunk_index: number
+  total_chunks?: number
+  chunk_method?: string
+  article_num?: string
+  article_type?: string
+  section?: string
+  char_count?: number
+  model?: string
+  block_type?: string
+  page?: number
+  chunk_part?: string
+}
+
+// 검색 결과 타입 (confidence 추가) ← UPDATED
 interface SearchResult {
   text: string
   similarity: number
-  metadata: {
-    doc_name: string
-    doc_title?: string
-    chunk_index: number
-    total_chunks?: number
-    chunk_method?: string
-    article_num?: string
-    article_type?: string
-    section?: string
-  }
+  metadata: ChunkMetadata
+  id?: string
+  confidence?: 'high' | 'medium' | 'low'
+  confidence_text?: string
+  interpretation?: string
   aiAnswer?: string
   aiLoading?: boolean
+}
+
+// 품질 요약 타입 ← NEW
+interface QualitySummary {
+  avg_similarity?: number
+  max_similarity?: number
+  min_similarity?: number
+  high_confidence_count?: number
+  threshold_used?: number
+  message?: string
 }
 
 interface ClarificationOption {
@@ -59,6 +82,7 @@ interface ClarificationOption {
   score: number
 }
 
+// RAG 응답 타입 (품질 요약 추가) ← UPDATED
 interface RAGResponse {
   query: string
   answer?: string
@@ -66,6 +90,8 @@ interface RAGResponse {
   sources?: SearchResult[]
   needs_clarification?: boolean
   clarification_options?: ClarificationOption[]
+  quality_summary?: QualitySummary
+  quality_warning?: string
 }
 
 interface DocumentInfo {
@@ -73,6 +99,7 @@ interface DocumentInfo {
   doc_title?: string
   chunk_count: number
   chunk_method?: string
+  model?: string
 }
 
 interface LLMModelsResponse {
@@ -86,7 +113,6 @@ interface LLMModelsResponse {
   }
 }
 
-// 임베딩 모델 스펙 타입 ← NEW
 interface EmbeddingModelSpec {
   path: string
   name: string
@@ -109,7 +135,7 @@ interface EmbeddingModelsResponse {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 프리셋 모델 (호환성 정보 포함) ← UPDATED
+// 프리셋 모델
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PRESET_MODELS = [
@@ -143,7 +169,6 @@ const HF_MODELS = [
   { key: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0', name: 'TinyLlama', desc: '영어 특화' },
 ]
 
-// 청킹 방식 정의 ← NEW
 const CHUNK_METHODS = [
   { key: 'article', name: '📜 조항 단위', desc: 'SOP/법률 권장', icon: '📜' },
   { key: 'recursive', name: '🔄 Recursive', desc: '랭체인 스타일', icon: '🔄' },
@@ -160,18 +185,293 @@ const API_URL = 'http://localhost:8000'
 // ═══════════════════════════════════════════════════════════════════════════
 
 const getSimilarityColor = (score: number) => {
-  if (score >= 0.7) return '#22c55e'
-  if (score >= 0.5) return '#eab308'
-  if (score >= 0.3) return '#f97316'
-  return '#ef4444'
+  if (score >= 0.65) return '#22c55e'  // high
+  if (score >= 0.35) return '#eab308'  // medium
+  return '#ef4444'                      // low
 }
 
 const getSimilarityLabel = (score: number) => {
-  if (score >= 0.8) return '매우 높음'
-  if (score >= 0.6) return '높음'
-  if (score >= 0.4) return '보통'
-  if (score >= 0.2) return '낮음'
+  if (score >= 0.85) return '매우 높음'
+  if (score >= 0.65) return '높음'
+  if (score >= 0.50) return '보통'
+  if (score >= 0.35) return '낮음'
   return '매우 낮음'
+}
+
+// 신뢰도 컬러 및 라벨 ← NEW
+const getConfidenceInfo = (confidence?: string) => {
+  switch (confidence) {
+    case 'high':
+      return { color: '#22c55e', emoji: '🟢', label: '신뢰도 높음' }
+    case 'medium':
+      return { color: '#eab308', emoji: '🟡', label: '참고용' }
+    case 'low':
+      return { color: '#ef4444', emoji: '🔴', label: '관련성 낮음' }
+    default:
+      return { color: '#666', emoji: '⚪', label: '알 수 없음' }
+  }
+}
+
+// 조항 타입 한글 변환 ← NEW
+const getArticleTypeLabel = (type?: string) => {
+  switch (type) {
+    case 'article': return '조'
+    case 'chapter': return '장'
+    case 'section': return '절'
+    case 'subsection': return '항'
+    case 'item': return '호'
+    case 'subitem': return '목'
+    case 'intro': return '서문'
+    case 'page': return '페이지'
+    default: return type || ''
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 메타데이터 시각화 컴포넌트 ← NEW
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface MetadataViewerProps {
+  metadata: ChunkMetadata
+  isExpanded?: boolean
+  onToggle?: () => void
+}
+
+const MetadataViewer = ({ metadata, isExpanded = false, onToggle }: MetadataViewerProps) => {
+  const [expanded, setExpanded] = useState(isExpanded)
+
+  const handleToggle = () => {
+    setExpanded(!expanded)
+    onToggle?.()
+  }
+
+  // 메타데이터를 카테고리별로 분류
+  const categories = {
+    document: {
+      label: '📄 문서 정보',
+      items: [
+        { key: 'doc_name', label: '파일명', value: metadata.doc_name },
+        { key: 'doc_title', label: '제목', value: metadata.doc_title },
+        { key: 'model', label: '임베딩 모델', value: metadata.model },
+      ].filter(item => item.value)
+    },
+    structure: {
+      label: '📌 구조 정보',
+      items: [
+        { key: 'article_type', label: '유형', value: metadata.article_type ? getArticleTypeLabel(metadata.article_type) : undefined },
+        { key: 'article_num', label: '번호', value: metadata.article_num },
+        { key: 'section', label: '섹션', value: metadata.section },
+        { key: 'block_type', label: '블록 타입', value: metadata.block_type },
+        { key: 'page', label: '페이지', value: metadata.page },
+      ].filter(item => item.value !== undefined)
+    },
+    chunk: {
+      label: '🧩 청크 정보',
+      items: [
+        { key: 'chunk_index', label: '청크 번호', value: `${metadata.chunk_index + 1}` },
+        { key: 'total_chunks', label: '전체 청크', value: metadata.total_chunks },
+        { key: 'chunk_method', label: '청킹 방식', value: metadata.chunk_method },
+        { key: 'chunk_part', label: '분할', value: metadata.chunk_part },
+        { key: 'char_count', label: '문자 수', value: metadata.char_count ? `${metadata.char_count}자` : undefined },
+      ].filter(item => item.value !== undefined)
+    }
+  }
+
+  return (
+    <div className="metadata-viewer">
+      <button className="metadata-toggle" onClick={handleToggle}>
+        <span>{expanded ? '📋' : '📋'} 메타데이터</span>
+        <span className="toggle-icon">{expanded ? '▼' : '▶'}</span>
+      </button>
+      
+      {expanded && (
+        <div className="metadata-content">
+          {Object.entries(categories).map(([key, category]) => (
+            category.items.length > 0 && (
+              <div key={key} className="metadata-category">
+                <div className="category-label">{category.label}</div>
+                <div className="metadata-items">
+                  {category.items.map(item => (
+                    <div key={item.key} className="metadata-item">
+                      <span className="item-key">{item.label}</span>
+                      <span className="item-value">{String(item.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          ))}
+          
+          {/* Raw JSON 토글 */}
+          <details className="raw-json">
+            <summary>🔧 Raw JSON</summary>
+            <pre>{JSON.stringify(metadata, null, 2)}</pre>
+          </details>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 품질 요약 컴포넌트 ← NEW
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface QualitySummaryCardProps {
+  summary: QualitySummary
+  warning?: string
+  resultCount: number
+}
+
+const QualitySummaryCard = ({ summary, warning, resultCount }: QualitySummaryCardProps) => {
+  if (summary.message) {
+    return <div className="quality-summary empty">{summary.message}</div>
+  }
+
+  const highCount = summary.high_confidence_count || 0
+  const highPercent = resultCount > 0 ? Math.round((highCount / resultCount) * 100) : 0
+
+  return (
+    <div className="quality-summary">
+      <div className="quality-header">
+        <span className="quality-title">📊 검색 품질</span>
+        {warning && <span className="quality-warning">⚠️</span>}
+      </div>
+      
+      <div className="quality-metrics">
+        <div className="metric">
+          <span className="metric-value" style={{ color: getSimilarityColor(summary.avg_similarity || 0) }}>
+            {((summary.avg_similarity || 0) * 100).toFixed(0)}%
+          </span>
+          <span className="metric-label">평균 유사도</span>
+        </div>
+        
+        <div className="metric">
+          <span className="metric-value" style={{ color: getSimilarityColor(summary.max_similarity || 0) }}>
+            {((summary.max_similarity || 0) * 100).toFixed(0)}%
+          </span>
+          <span className="metric-label">최고 유사도</span>
+        </div>
+        
+        <div className="metric">
+          <span className="metric-value" style={{ color: '#22c55e' }}>
+            {highCount}/{resultCount}
+          </span>
+          <span className="metric-label">신뢰도 높음</span>
+        </div>
+        
+        <div className="metric confidence-bar">
+          <div className="bar-track">
+            <div className="bar-fill high" style={{ width: `${highPercent}%` }}></div>
+          </div>
+          <span className="metric-label">신뢰도 분포</span>
+        </div>
+      </div>
+      
+      {warning && (
+        <div className="quality-warning-box">
+          {warning}
+        </div>
+      )}
+      
+      {summary.threshold_used && (
+        <div className="threshold-info">
+          임계값: {(summary.threshold_used * 100).toFixed(0)}% 이상
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 검색 결과 카드 컴포넌트 (개선됨) ← UPDATED
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface ResultCardProps {
+  result: SearchResult
+  index: number
+  onAskChunk: (idx: number, text: string) => void
+}
+
+const ResultCard = ({ result, index, onAskChunk }: ResultCardProps) => {
+  const [showMetadata, setShowMetadata] = useState(false)
+  const confidenceInfo = getConfidenceInfo(result.confidence)
+  
+  // 조항 정보 생성
+  const getArticleDisplay = () => {
+    const { metadata } = result
+    if (!metadata.article_num) return null
+    
+    const typeLabel = getArticleTypeLabel(metadata.article_type)
+    return `제${metadata.article_num}${typeLabel}`
+  }
+
+  return (
+    <div className={`result-card confidence-${result.confidence || 'unknown'}`}>
+      {/* 헤더 */}
+      <div className="card-header">
+        <div className="source-info">
+          <span className="source-file">📄 {result.metadata?.doc_name}</span>
+          {getArticleDisplay() && (
+            <span className="article-info">📌 {getArticleDisplay()}</span>
+          )}
+          {result.metadata?.page && (
+            <span className="page-info">📃 {result.metadata.page}p</span>
+          )}
+        </div>
+        
+        <div className="relevance-info">
+          {/* 신뢰도 배지 */}
+          <div className="confidence-badge" style={{ borderColor: confidenceInfo.color }}>
+            <span className="confidence-emoji">{confidenceInfo.emoji}</span>
+            <span className="confidence-label">{confidenceInfo.label}</span>
+          </div>
+          
+          {/* 유사도 */}
+          <div className="similarity-score" style={{ color: getSimilarityColor(result.similarity) }}>
+            <span className="score-value">{(result.similarity * 100).toFixed(0)}%</span>
+            <span className="score-label">{getSimilarityLabel(result.similarity)}</span>
+          </div>
+        </div>
+      </div>
+      
+      {/* 청크 인덱스 표시 */}
+      <div className="chunk-position">
+        청크 {(result.metadata?.chunk_index || 0) + 1}
+        {result.metadata?.total_chunks && ` / ${result.metadata.total_chunks}`}
+        {result.metadata?.chunk_method && (
+          <span className="chunk-method-badge">{result.metadata.chunk_method}</span>
+        )}
+      </div>
+      
+      {/* 본문 */}
+      <div className="card-content">{result.text}</div>
+      
+      {/* 메타데이터 뷰어 */}
+      <MetadataViewer 
+        metadata={result.metadata} 
+        isExpanded={showMetadata}
+        onToggle={() => setShowMetadata(!showMetadata)}
+      />
+      
+      {/* AI 답변 버튼 */}
+      <button 
+        className="chunk-ai-btn" 
+        onClick={() => onAskChunk(index, result.text)} 
+        disabled={result.aiLoading}
+      >
+        {result.aiLoading ? '생성 중...' : '🤖 이 내용으로 답변 생성'}
+      </button>
+      
+      {/* AI 답변 */}
+      {result.aiAnswer && (
+        <div className="chunk-answer">
+          <div className="chunk-answer-title">💡 AI 답변</div>
+          <div className="chunk-answer-text">{result.aiAnswer}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -199,209 +499,181 @@ function App() {
   // LLM
   const [llmBackend, setLlmBackend] = useState<'ollama' | 'huggingface'>('ollama')
   const [llmModel, setLlmModel] = useState('qwen2.5:3b')
-  const [ollamaStatus, setOllamaStatus] = useState<{ running: boolean; models: string[] }>({ running: false, models: [] })
+  const [ollamaStatus, setOllamaStatus] = useState({ running: false, models: [] as string[] })
   
-  // 청킹 ← UPDATED
-  const [chunkMethod, setChunkMethod] = useState<string>('article')
-  const [chunkSize, setChunkSize] = useState<number>(500)
-  const [semanticThreshold, setSemanticThreshold] = useState<number>(0.5)  // NEW
-  const [chunkLlmModel, setChunkLlmModel] = useState<string>('qwen2.5:3b')  // NEW (LLM 파싱용)
+  // 청킹 설정
+  const [chunkMethod, setChunkMethod] = useState('article')
+  const [chunkSize, setChunkSize] = useState(300) // 기본값 300으로 변경 ← UPDATED
+  const [semanticThreshold, setSemanticThreshold] = useState(0.5)
+  const [chunkLlmModel, setChunkLlmModel] = useState('qwen2.5:3b')
   
-  // 되묻기
+  // 검색 설정 ← NEW
+  const [similarityThreshold, setSimilarityThreshold] = useState<number | null>(null)
+  const [showLowConfidence, setShowLowConfidence] = useState(true)
+  
+  // 에이전트
   const [enableClarification, setEnableClarification] = useState(true)
   const [clarificationMessage, setClarificationMessage] = useState<string | null>(null)
   const [clarificationOptions, setClarificationOptions] = useState<ClarificationOption[]>([])
+  const [selectedDocFilter, setSelectedDocFilter] = useState<string | null>(null)
   
-  // 임베딩 모델 정보 ← NEW
-  const [showModelInfo, setShowModelInfo] = useState(false)
-  const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelsResponse | null>(null)
-  
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  // AI 답변
   const [globalAnswer, setGlobalAnswer] = useState<string>('')
   const [globalAnswerLoading, setGlobalAnswerLoading] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [activeTab, setActiveTab] = useState<'single' | 'multi' | 'matrix' | 'rag'>('rag')
+  
+  // 모델 정보 팝업
+  const [showModelInfo, setShowModelInfo] = useState(false)
+  const [embeddingModels, setEmbeddingModels] = useState<EmbeddingModelsResponse | null>(null)
 
+  // UI
+  const [activeTab, setActiveTab] = useState<'compare' | 'multi' | 'matrix' | 'rag'>('rag')
+  const [loading, setLoading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Ollama 상태 확인
   useEffect(() => {
     checkOllamaStatus()
+    fetchDocuments()
     fetchEmbeddingModels()
   }, [])
 
   const checkOllamaStatus = async () => {
     try {
-      const response = await fetch(`${API_URL}/models/llm`)
-      if (response.ok) {
-        const data: LLMModelsResponse = await response.json()
-        setOllamaStatus({
-          running: data.ollama.server_running,
-          models: data.ollama.available_models
-        })
-        if (!data.ollama.server_running) {
-          setLlmBackend('huggingface')
-          setLlmModel('Qwen/Qwen2.5-0.5B-Instruct')
-        }
+      const res = await fetch(`${API_URL}/models/llm`)
+      const data: LLMModelsResponse = await res.json()
+      setOllamaStatus({
+        running: data.ollama?.server_running || false,
+        models: data.ollama?.available_models || []
+      })
+      if (!data.ollama?.server_running) {
+        setLlmBackend('huggingface')
+        setLlmModel('Qwen/Qwen2.5-0.5B-Instruct')
       }
-    } catch {
+    } catch (e) {
       setOllamaStatus({ running: false, models: [] })
       setLlmBackend('huggingface')
     }
   }
 
-  // 임베딩 모델 정보 가져오기 ← NEW
   const fetchEmbeddingModels = async () => {
     try {
-      const response = await fetch(`${API_URL}/models/embedding`)
-      if (response.ok) {
-        const data: EmbeddingModelsResponse = await response.json()
-        setEmbeddingModels(data)
-      }
-    } catch {
-      console.error('임베딩 모델 정보 로드 실패')
-    }
-  }
-
-  const handleCompare = async () => {
-    if (!text1.trim() || !text2.trim()) return alert('두 텍스트를 모두 입력해주세요.')
-    
-    // 모델 호환성 체크
-    const model = PRESET_MODELS.find(m => m.key === selectedModel)
-    if (model && !model.compatible) {
-      if (!confirm(`⚠️ ${model.name}은 dim=${model.dim}, mem=${model.mem}MB로 권장 범위(dim≤1024, mem≤1300MB)를 초과합니다. 계속하시겠습니까?`)) {
-        return
-      }
-    }
-    
-    setLoading(true)
-    setResult(null)
-    try {
-      const response = await fetch(`${API_URL}/compare`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text1, text2, model: selectedModel })
-      })
-      if (response.ok) setResult(await response.json())
-    } catch { alert('서버 연결 실패') }
-    finally { setLoading(false) }
-  }
-
-  const handleMultiCompare = async () => {
-    if (!text1.trim() || !text2.trim()) return alert('두 텍스트를 모두 입력해주세요.')
-    if (selectedModels.length < 1) return alert('최소 1개 모델을 선택해주세요.')
-    setLoading(true)
-    setMultiResult(null)
-    try {
-      const response = await fetch(`${API_URL}/compare/models`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text1, text2, models: selectedModels })
-      })
-      if (response.ok) setMultiResult(await response.json())
-    } catch { alert('서버 연결 실패') }
-    finally { setLoading(false) }
-  }
-
-  const handleMatrixCompare = async () => {
-    const validTexts = texts.filter(t => t.trim())
-    if (validTexts.length < 2) return alert('최소 2개 텍스트를 입력해주세요.')
-    setLoading(true)
-    setMatrixResult(null)
-    try {
-      const response = await fetch(`${API_URL}/compare/matrix`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ texts: validTexts, model: selectedModel })
-      })
-      if (response.ok) setMatrixResult(await response.json())
-    } catch { alert('서버 연결 실패') }
-    finally { setLoading(false) }
-  }
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    
-    // 모델 호환성 체크
-    const model = PRESET_MODELS.find(m => m.key === ragModel)
-    if (model && !model.compatible) {
-      if (!confirm(`⚠️ ${model.name}은 권장 범위를 초과합니다. 계속하시겠습니까?`)) {
-        return
-      }
-    }
-    
-    setLoading(true)
-    setUploadStatus('업로드 중...')
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('collection', 'documents')
-      formData.append('chunk_size', chunkSize.toString())
-      formData.append('chunk_method', chunkMethod)
-      formData.append('model', ragModel)
-      formData.append('overlap', '50')
-      
-      // Semantic 분할용 threshold
-      if (chunkMethod === 'semantic') {
-        formData.append('semantic_threshold', semanticThreshold.toString())
-      }
-      
-      // LLM 파싱용 모델 설정
-      if (chunkMethod === 'llm') {
-        formData.append('llm_model', chunkLlmModel)
-        formData.append('llm_backend', llmBackend)
-      }
-      
-      const response = await fetch(`${API_URL}/rag/upload`, { method: 'POST', body: formData })
-      if (response.ok) {
-        const data = await response.json()
-        setUploadStatus(`✅ ${data.filename} (${data.chunks_created}개 조각, ${data.chunk_method})`)
-        fetchDocuments()
-      } else {
-        const errorData = await response.json()
-        setUploadStatus(`❌ 업로드 실패: ${errorData.detail || '알 수 없는 오류'}`)
-      }
-    } catch { setUploadStatus('❌ 업로드 실패') }
-    finally { 
-      setLoading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      const res = await fetch(`${API_URL}/models/embedding`)
+      const data: EmbeddingModelsResponse = await res.json()
+      setEmbeddingModels(data)
+    } catch (e) {
+      console.error('Failed to fetch embedding models:', e)
     }
   }
 
   const fetchDocuments = async () => {
     try {
-      const response = await fetch(`${API_URL}/rag/documents?collection=documents`)
-      if (response.ok) {
-        const data = await response.json()
-        setDocuments(data.documents || [])
-      }
-    } catch { console.error('문서 목록 로드 실패') }
+      const res = await fetch(`${API_URL}/rag/documents?collection=documents`)
+      const data = await res.json()
+      setDocuments(data.documents || [])
+    } catch (e) {
+      console.error('Failed to fetch documents:', e)
+    }
   }
 
+  // 파일 업로드
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setLoading(true)
+    setUploadStatus('업로드 중...')
+
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('collection', 'documents')
+    formData.append('model', ragModel)
+    formData.append('chunk_method', chunkMethod)
+    formData.append('chunk_size', chunkSize.toString())
+
+    try {
+      const res = await fetch(`${API_URL}/rag/upload`, { method: 'POST', body: formData })
+      const data = await res.json()
+      
+      if (data.success) {
+        setUploadStatus(`✅ ${data.filename} 업로드 완료 (${data.chunks_created}개 청크, ${data.chunk_method} 방식)`)
+        fetchDocuments()
+      } else {
+        setUploadStatus(`❌ 업로드 실패: ${data.detail || '알 수 없는 오류'}`)
+      }
+    } catch (e) {
+      setUploadStatus(`❌ 업로드 오류: ${e}`)
+    }
+
+    setLoading(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  // 문서 삭제
+  const handleDeleteDocument = async (docName: string) => {
+    try {
+      await fetch(`${API_URL}/rag/document`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_name: docName, collection: 'documents' })
+      })
+      fetchDocuments()
+    } catch (e) {
+      console.error('Failed to delete document:', e)
+    }
+  }
+
+  // RAG 검색
   const handleRAGSearch = async () => {
-    if (!ragQuery.trim()) return alert('질문을 입력해주세요.')
+    if (!ragQuery.trim()) return
+
     setLoading(true)
     setRagResult(null)
     setGlobalAnswer('')
     setClarificationMessage(null)
     setClarificationOptions([])
+
     try {
-      const response = await fetch(`${API_URL}/rag/search`, {
+      const res = await fetch(`${API_URL}/rag/search`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: ragQuery, collection: 'documents', n_results: 5, model: ragModel })
+        body: JSON.stringify({
+          query: ragQuery,
+          collection: 'documents',
+          n_results: 5,
+          model: ragModel,
+          filter_doc: selectedDocFilter,
+          similarity_threshold: similarityThreshold
+        })
       })
-      if (response.ok) setRagResult(await response.json())
-    } catch { alert('검색 실패') }
-    finally { setLoading(false) }
+      const data = await res.json()
+      
+      // 낮은 신뢰도 필터링 ← NEW
+      let filteredResults = data.results || []
+      if (!showLowConfidence) {
+        filteredResults = filteredResults.filter((r: SearchResult) => r.confidence !== 'low')
+      }
+      
+      setRagResult({ 
+        query: ragQuery, 
+        results: filteredResults,
+        quality_summary: data.quality_summary
+      })
+    } catch (e) {
+      console.error('Search failed:', e)
+    }
+
+    setLoading(false)
   }
 
-  const handleAIAnswer = async (filterDoc?: string) => {
+  // AI 답변 (에이전트)
+  const handleAIAnswer = async () => {
     if (!ragQuery.trim()) return
+
     setGlobalAnswerLoading(true)
     setGlobalAnswer('')
-    setClarificationMessage(null)
-    
+
     try {
-      const response = await fetch(`${API_URL}/rag/ask`, {
+      const res = await fetch(`${API_URL}/rag/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -411,184 +683,183 @@ function App() {
           embedding_model: ragModel,
           llm_model: llmModel,
           llm_backend: llmBackend,
-          check_clarification: enableClarification && !filterDoc,
-          filter_doc: filterDoc || null
+          check_clarification: enableClarification,
+          filter_doc: selectedDocFilter,
+          similarity_threshold: similarityThreshold
         })
       })
-      if (response.ok) {
-        const data: RAGResponse = await response.json()
+      const data: RAGResponse = await res.json()
+
+      if (data.needs_clarification && data.clarification_options) {
+        setClarificationMessage(data.answer || '')
+        setClarificationOptions(data.clarification_options)
         
-        if (data.needs_clarification && data.clarification_options) {
-          setClarificationMessage(data.answer || '')
-          setClarificationOptions(data.clarification_options)
-          setGlobalAnswer('')
-        } else {
-          setGlobalAnswer(data.answer || '답변 생성 실패')
-          setClarificationMessage(null)
-          setClarificationOptions([])
+        // 낮은 신뢰도 필터링
+        let sources = data.sources || []
+        if (!showLowConfidence) {
+          sources = sources.filter(r => r.confidence !== 'low')
         }
+        setRagResult({ 
+          query: ragQuery, 
+          results: sources,
+          quality_summary: data.quality_summary,
+          quality_warning: data.quality_warning
+        })
+      } else {
+        setGlobalAnswer(data.answer || '')
+        setClarificationMessage(null)
+        setClarificationOptions([])
         
-        if (data.sources) {
-          setRagResult(prev => prev ? { ...prev, results: data.sources } : { query: ragQuery, results: data.sources })
+        // 낮은 신뢰도 필터링
+        let sources = data.sources || []
+        if (!showLowConfidence) {
+          sources = sources.filter(r => r.confidence !== 'low')
         }
+        setRagResult({ 
+          query: ragQuery, 
+          results: sources,
+          quality_summary: data.quality_summary,
+          quality_warning: data.quality_warning
+        })
       }
-    } catch { setGlobalAnswer('오류 발생') }
-    finally { setGlobalAnswerLoading(false) }
+    } catch (e) {
+      setGlobalAnswer(`오류가 발생했습니다: ${e}`)
+    }
+
+    setGlobalAnswerLoading(false)
   }
 
-  const handleSelectDocument = (docName: string) => {
+  // 특정 문서 선택
+  const handleSelectDocument = async (docName: string) => {
+    setSelectedDocFilter(docName)
     setClarificationMessage(null)
     setClarificationOptions([])
-    handleAIAnswer(docName)
+    
+    setGlobalAnswerLoading(true)
+    
+    try {
+      const res = await fetch(`${API_URL}/rag/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: ragQuery,
+          collection: 'documents',
+          n_results: 5,
+          embedding_model: ragModel,
+          llm_model: llmModel,
+          llm_backend: llmBackend,
+          check_clarification: false,
+          filter_doc: docName,
+          similarity_threshold: similarityThreshold
+        })
+      })
+      const data: RAGResponse = await res.json()
+      
+      setGlobalAnswer(data.answer || '')
+      
+      let sources = data.sources || []
+      if (!showLowConfidence) {
+        sources = sources.filter(r => r.confidence !== 'low')
+      }
+      setRagResult({ 
+        query: ragQuery, 
+        results: sources,
+        quality_summary: data.quality_summary,
+        quality_warning: data.quality_warning
+      })
+    } catch (e) {
+      setGlobalAnswer(`오류: ${e}`)
+    }
+    
+    setGlobalAnswerLoading(false)
+    setSelectedDocFilter(null)
   }
 
-  const handleChunkAIAnswer = async (index: number, chunkText: string) => {
+  // 개별 청크 AI 답변
+  const handleChunkAIAnswer = async (idx: number, chunkText: string) => {
     if (!ragResult?.results) return
+
     const updatedResults = [...ragResult.results]
-    updatedResults[index] = { ...updatedResults[index], aiLoading: true }
+    updatedResults[idx] = { ...updatedResults[idx], aiLoading: true }
     setRagResult({ ...ragResult, results: updatedResults })
 
     try {
-      const response = await fetch(`${API_URL}/rag/ask-chunk`, {
+      const res = await fetch(`${API_URL}/rag/ask-chunk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: ragQuery, chunk_text: chunkText, llm_model: llmModel, llm_backend: llmBackend })
+        body: JSON.stringify({
+          query: ragQuery,
+          chunk_text: chunkText,
+          llm_model: llmModel,
+          llm_backend: llmBackend
+        })
       })
-      const data = await response.json()
-      const newResults = [...(ragResult.results || [])]
-      newResults[index] = { ...newResults[index], aiAnswer: data.answer || '답변 실패', aiLoading: false }
-      setRagResult({ ...ragResult, results: newResults })
-    } catch {
-      const newResults = [...(ragResult.results || [])]
-      newResults[index] = { ...newResults[index], aiAnswer: '오류 발생', aiLoading: false }
-      setRagResult({ ...ragResult, results: newResults })
+      const data = await res.json()
+
+      updatedResults[idx] = {
+        ...updatedResults[idx],
+        aiLoading: false,
+        aiAnswer: data.answer
+      }
+      setRagResult({ ...ragResult, results: updatedResults })
+    } catch (e) {
+      updatedResults[idx] = {
+        ...updatedResults[idx],
+        aiLoading: false,
+        aiAnswer: `오류: ${e}`
+      }
+      setRagResult({ ...ragResult, results: updatedResults })
     }
   }
 
-  const handleDeleteDocument = async (docName: string) => {
-    if (!confirm(`"${docName}" 삭제?`)) return
+  // 텍스트 비교
+  const handleCompare = async () => {
+    if (!text1.trim() || !text2.trim()) return
+    setLoading(true)
     try {
-      const response = await fetch(`${API_URL}/rag/document`, {
-        method: 'DELETE',
+      const res = await fetch(`${API_URL}/compare`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ doc_name: docName, collection: 'documents' })
+        body: JSON.stringify({ text1, text2, model: selectedModel })
       })
-      if (response.ok) {
-        fetchDocuments()
-        setUploadStatus(`🗑️ ${docName} 삭제됨`)
-      }
-    } catch { alert('삭제 실패') }
+      const data: CompareResult = await res.json()
+      setResult(data)
+    } catch (e) {
+      console.error('Compare failed:', e)
+    }
+    setLoading(false)
   }
 
-  const handleTabChange = (tab: 'single' | 'multi' | 'matrix' | 'rag') => {
-    setActiveTab(tab)
-    if (tab === 'rag') fetchDocuments()
-  }
-
-  const getArticleInfo = (metadata: SearchResult['metadata']) => {
-    const parts = []
-    if (metadata.article_type === 'article' && metadata.article_num) parts.push(`제${metadata.article_num}조`)
-    else if (metadata.article_type === 'chapter' && metadata.article_num) parts.push(`제${metadata.article_num}장`)
-    else if (metadata.article_num) parts.push(`${metadata.article_num}`)
-    if (metadata.section) parts.push(metadata.section)
-    return parts.join(' / ')
-  }
-
-  // 모델 선택 렌더링 (호환성 표시 포함) ← NEW
-  const renderModelSelect = (value: string, onChange: (v: string) => void, showWarning: boolean = true) => (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
-      {PRESET_MODELS.map(m => (
-        <option key={m.key} value={m.key} style={{ color: m.compatible ? 'inherit' : '#f97316' }}>
-          {m.compatible ? '' : '⚠️ '}{m.name} {showWarning && `(${m.dim}d, ${m.mem}MB)`}
-        </option>
-      ))}
-    </select>
+  // 모델 선택 렌더링
+  const renderModelSelect = (value: string, onChange: (v: string) => void, showIncompatible = true) => (
+    <div className="model-select-wrapper">
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {PRESET_MODELS.filter(m => showIncompatible || m.compatible).map(m => (
+          <option key={m.key} value={m.key} disabled={!m.compatible}>
+            {m.name} - {m.desc} {!m.compatible && '⚠️'}
+          </option>
+        ))}
+      </select>
+      <button className="info-btn" onClick={() => setShowModelInfo(!showModelInfo)}>ℹ️</button>
+    </div>
   )
 
   return (
     <div className="app">
       <header className="header">
-        <h1 className="title">🔍 텍스트 유사도 + RAG v5.0</h1>
-        <p className="subtitle">확장 청킹 (Recursive/Semantic/LLM) + 모델 필터링 + Ollama 지원</p>
+        <h1 className="title">🔍 텍스트 유사도 + RAG</h1>
+        <p className="subtitle">v5.1 - 검색 품질 시각화 + 메타데이터 뷰어</p>
       </header>
 
       <div className="tabs">
-        {(['single', 'multi', 'matrix', 'rag'] as const).map(tab => (
-          <button key={tab} className={`tab ${activeTab === tab ? 'active' : ''}`} onClick={() => handleTabChange(tab)}>
-            {tab === 'single' && '단일 비교'}
-            {tab === 'multi' && '모델 비교'}
-            {tab === 'matrix' && '매트릭스'}
-            {tab === 'rag' && '📄 RAG'}
-          </button>
-        ))}
+        <button className={`tab ${activeTab === 'compare' ? 'active' : ''}`} onClick={() => setActiveTab('compare')}>📊 1:1 비교</button>
+        <button className={`tab ${activeTab === 'multi' ? 'active' : ''}`} onClick={() => setActiveTab('multi')}>📈 멀티모델</button>
+        <button className={`tab ${activeTab === 'matrix' ? 'active' : ''}`} onClick={() => setActiveTab('matrix')}>🧮 유사도 행렬</button>
+        <button className={`tab ${activeTab === 'rag' ? 'active' : ''}`} onClick={() => setActiveTab('rag')}>💬 RAG 질문</button>
       </div>
 
       <main className="main">
-        {activeTab === 'single' && (
-          <>
-            <div className="input-section">
-              <div className="text-input">
-                <label>텍스트 1</label>
-                <textarea value={text1} onChange={(e) => setText1(e.target.value)} placeholder="첫 번째 텍스트..." rows={5} />
-              </div>
-              <div className="text-input">
-                <label>텍스트 2</label>
-                <textarea value={text2} onChange={(e) => setText2(e.target.value)} placeholder="두 번째 텍스트..." rows={5} />
-              </div>
-            </div>
-            <div className="model-select">
-              <label>모델 <button className="info-btn" onClick={() => setShowModelInfo(!showModelInfo)}>ℹ️</button></label>
-              {renderModelSelect(selectedModel, setSelectedModel)}
-            </div>
-            
-            {/* 모델 정보 팝업 */}
-            {showModelInfo && embeddingModels && (
-              <div className="model-info-popup">
-                <div className="popup-header">
-                  <h4>📊 임베딩 모델 필터 (dim≤{embeddingModels.filter_criteria.max_dim}, mem≤{embeddingModels.filter_criteria.max_memory_mb}MB)</h4>
-                  <button onClick={() => setShowModelInfo(false)}>×</button>
-                </div>
-                <div className="model-lists">
-                  <div className="compatible-list">
-                    <h5>✅ 호환 ({embeddingModels.compatible.length})</h5>
-                    {embeddingModels.compatible.map(m => (
-                      <div key={m.path} className="model-item">
-                        <span>{m.name}</span>
-                        <span className="model-spec">{m.dim}d / {m.memory_mb}MB</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="incompatible-list">
-                    <h5>❌ 비호환 ({embeddingModels.incompatible.length})</h5>
-                    {embeddingModels.incompatible.map(m => (
-                      <div key={m.path} className="model-item warning">
-                        <span>{m.name}</span>
-                        <span className="model-spec">{m.dim}d / {m.memory_mb}MB</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            <button className="primary-btn" onClick={handleCompare} disabled={loading}>
-              {loading ? '분석 중...' : '비교하기'}
-            </button>
-            {result && (
-              <div className="result-box">
-                <div className="score-big" style={{ color: getSimilarityColor(result.similarity) }}>
-                  {(result.similarity * 100).toFixed(1)}%
-                </div>
-                <div className="score-label">{result.interpretation}</div>
-                <div className="score-bar">
-                  <div className="score-fill" style={{ width: `${result.similarity * 100}%`, backgroundColor: getSimilarityColor(result.similarity) }} />
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
-        {activeTab === 'multi' && (
+        {activeTab === 'compare' && (
           <>
             <div className="input-section">
               <div className="text-input">
@@ -600,22 +871,54 @@ function App() {
                 <textarea value={text2} onChange={(e) => setText2(e.target.value)} placeholder="두 번째 텍스트..." rows={4} />
               </div>
             </div>
+            <div className="model-select">
+              <label>🤖 임베딩 모델</label>
+              {renderModelSelect(selectedModel, setSelectedModel)}
+            </div>
+            <button className="primary-btn" onClick={handleCompare} disabled={loading || !text1 || !text2}>{loading ? '분석 중...' : '유사도 분석'}</button>
+            {result && (
+              <div className="result-box">
+                <div className="score-big" style={{ color: getSimilarityColor(result.similarity) }}>{(result.similarity * 100).toFixed(1)}%</div>
+                <div className="score-label">{result.interpretation}</div>
+                <div className="score-bar"><div className="score-fill" style={{ width: `${result.similarity * 100}%`, backgroundColor: getSimilarityColor(result.similarity) }}></div></div>
+              </div>
+            )}
+          </>
+        )}
+
+        {activeTab === 'multi' && (
+          <>
+            <div className="input-section">
+              <div className="text-input"><label>텍스트 1</label><textarea value={text1} onChange={(e) => setText1(e.target.value)} placeholder="첫 번째 텍스트..." rows={4} /></div>
+              <div className="text-input"><label>텍스트 2</label><textarea value={text2} onChange={(e) => setText2(e.target.value)} placeholder="두 번째 텍스트..." rows={4} /></div>
+            </div>
             <div className="model-grid">
               {PRESET_MODELS.map(m => (
-                <label key={m.key} className={`model-chip ${selectedModels.includes(m.key) ? 'selected' : ''} ${!m.compatible ? 'incompatible' : ''}`} title={`${m.dim}d, ${m.mem}MB${!m.compatible ? ' (⚠️ 권장 초과)' : ''}`}>
-                  <input type="checkbox" checked={selectedModels.includes(m.key)} onChange={() => setSelectedModels(prev => prev.includes(m.key) ? prev.filter(k => k !== m.key) : [...prev, m.key])} />
-                  {!m.compatible && '⚠️ '}{m.name}
+                <label key={m.key} className={`model-chip ${selectedModels.includes(m.key) ? 'selected' : ''} ${!m.compatible ? 'incompatible' : ''}`}>
+                  <input type="checkbox" checked={selectedModels.includes(m.key)} onChange={(e) => setSelectedModels(e.target.checked ? [...selectedModels, m.key] : selectedModels.filter(k => k !== m.key))} disabled={!m.compatible} />
+                  {m.name}
                 </label>
               ))}
             </div>
-            <button className="primary-btn" onClick={handleMultiCompare} disabled={loading}>
-              {loading ? '비교 중...' : `${selectedModels.length}개 모델로 비교`}
-            </button>
+            <button className="primary-btn" onClick={async () => {
+              if (!text1.trim() || !text2.trim() || selectedModels.length === 0) return
+              setLoading(true)
+              try {
+                const res = await fetch(`${API_URL}/compare/multi`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ text1, text2, models: selectedModels.filter(k => PRESET_MODELS.find(m => m.key === k)?.compatible) })
+                })
+                const data: MultiModelResult = await res.json()
+                setMultiResult(data)
+              } catch (e) { console.error(e) }
+              setLoading(false)
+            }} disabled={loading || !text1 || !text2 || selectedModels.length === 0}>{loading ? '분석 중...' : '멀티모델 비교'}</button>
             {multiResult && (
               <div className="results-list">
                 {multiResult.results.map((r, i) => (
                   <div key={i} className="result-row">
-                    <span className="result-name">{r.model_key}</span>
+                    <span className="result-name">{PRESET_MODELS.find(m => m.key === r.model_key)?.name || r.model_key}</span>
                     <span className="result-score" style={{ color: getSimilarityColor(r.similarity) }}>{(r.similarity * 100).toFixed(1)}%</span>
                   </div>
                 ))}
@@ -627,25 +930,42 @@ function App() {
         {activeTab === 'matrix' && (
           <>
             <div className="matrix-inputs">
-              {texts.map((text, i) => (
+              {texts.map((t, i) => (
                 <div key={i} className="matrix-row">
                   <span className="row-num">{i + 1}</span>
-                  <textarea value={text} onChange={(e) => { const newTexts = [...texts]; newTexts[i] = e.target.value; setTexts(newTexts) }} placeholder={`텍스트 ${i + 1}`} rows={2} />
+                  <textarea value={t} onChange={(e) => { const newTexts = [...texts]; newTexts[i] = e.target.value; setTexts(newTexts) }} placeholder={`텍스트 ${i + 1}`} rows={2} />
                   {texts.length > 2 && <button className="remove-btn" onClick={() => setTexts(texts.filter((_, j) => j !== i))}>×</button>}
                 </div>
               ))}
-              {texts.length < 10 && <button className="add-btn" onClick={() => setTexts([...texts, ''])}>+ 추가</button>}
+              {texts.length < 6 && <button className="add-btn" onClick={() => setTexts([...texts, ''])}>+ 텍스트 추가</button>}
             </div>
-            <button className="primary-btn" onClick={handleMatrixCompare} disabled={loading}>{loading ? '계산 중...' : '매트릭스 생성'}</button>
+            <div className="model-select"><label>🤖 임베딩 모델</label>{renderModelSelect(selectedModel, setSelectedModel)}</div>
+            <button className="primary-btn" onClick={async () => {
+              const validTexts = texts.filter(t => t.trim())
+              if (validTexts.length < 2) return
+              setLoading(true)
+              try {
+                const res = await fetch(`${API_URL}/matrix`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ texts: validTexts, model: selectedModel })
+                })
+                const data = await res.json()
+                setMatrixResult({ similarity_matrix: data.matrix, texts: validTexts, model_used: data.model_used })
+              } catch (e) { console.error(e) }
+              setLoading(false)
+            }} disabled={loading || texts.filter(t => t.trim()).length < 2}>{loading ? '분석 중...' : '유사도 행렬 생성'}</button>
             {matrixResult && (
               <div className="matrix-table-wrap">
                 <table className="matrix-table">
-                  <thead><tr><th></th>{matrixResult.texts.map((_, i) => <th key={i}>{i + 1}</th>)}</tr></thead>
+                  <thead>
+                    <tr><th></th>{matrixResult.texts.map((_, i) => <th key={i}>{i + 1}</th>)}</tr>
+                  </thead>
                   <tbody>
                     {matrixResult.similarity_matrix.map((row, i) => (
                       <tr key={i}>
                         <td className="row-head">{i + 1}</td>
-                        {row.map((score, j) => <td key={j} style={{ backgroundColor: i === j ? '#333' : `${getSimilarityColor(score)}33`, color: getSimilarityColor(score) }}>{(score * 100).toFixed(0)}%</td>)}
+                        {row.map((v, j) => <td key={j} style={{ backgroundColor: `rgba(37, 99, 235, ${v * 0.5})` }}>{(v * 100).toFixed(0)}%</td>)}
                       </tr>
                     ))}
                   </tbody>
@@ -657,6 +977,35 @@ function App() {
 
         {activeTab === 'rag' && (
           <>
+            {showModelInfo && embeddingModels && (
+              <div className="model-info-popup">
+                <div className="popup-header">
+                  <h4>📊 임베딩 모델 호환성 (dim≤{embeddingModels.filter_criteria.max_dim}, mem≤{embeddingModels.filter_criteria.max_memory_mb}MB)</h4>
+                  <button onClick={() => setShowModelInfo(false)}>×</button>
+                </div>
+                <div className="model-lists">
+                  <div className="compatible-list">
+                    <h5>✅ 호환 ({embeddingModels.compatible.length})</h5>
+                    {embeddingModels.compatible.map(m => (
+                      <div key={m.path} className="model-item">
+                        <span>{m.name}</span>
+                        <span className="model-spec">dim:{m.dim} / {m.memory_mb}MB</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="incompatible-list">
+                    <h5>⚠️ 비호환 ({embeddingModels.incompatible.length})</h5>
+                    {embeddingModels.incompatible.map(m => (
+                      <div key={m.path} className="model-item warning">
+                        <span>{m.name}</span>
+                        <span className="model-spec">dim:{m.dim} / {m.memory_mb}MB</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="ollama-status">
               {ollamaStatus.running ? (
                 <span className="status-ok">✅ Ollama 실행 중 ({ollamaStatus.models.length}개 모델)</span>
@@ -690,7 +1039,7 @@ function App() {
               </div>
             </div>
 
-            {/* 청킹 설정 - 확장됨 ← UPDATED */}
+            {/* 청킹 설정 */}
             <div className="chunk-settings">
               <label className="chunk-label">📦 청킹 방식</label>
               <div className="chunk-method-grid">
@@ -709,38 +1058,57 @@ function App() {
               
               <div className="chunk-size">
                 <span>최대 조각 크기: {chunkSize}자</span>
-                <input type="range" min="200" max="2000" step="100" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} />
+                <input type="range" min="100" max="1000" step="50" value={chunkSize} onChange={(e) => setChunkSize(Number(e.target.value))} />
               </div>
               
-              {/* Semantic 분할 옵션 ← NEW */}
               {chunkMethod === 'semantic' && (
                 <div className="semantic-options">
                   <span>🧠 유사도 임계값: {semanticThreshold.toFixed(2)}</span>
-                  <input 
-                    type="range" 
-                    min="0.3" 
-                    max="0.8" 
-                    step="0.05" 
-                    value={semanticThreshold} 
-                    onChange={(e) => setSemanticThreshold(Number(e.target.value))} 
-                  />
+                  <input type="range" min="0.3" max="0.8" step="0.05" value={semanticThreshold} onChange={(e) => setSemanticThreshold(Number(e.target.value))} />
                   <span className="hint">낮을수록 더 작게 분할</span>
                 </div>
               )}
               
-              {/* LLM 파싱 옵션 ← NEW */}
               {chunkMethod === 'llm' && (
                 <div className="llm-chunk-options">
                   <span>🤖 파싱용 LLM:</span>
                   <select value={chunkLlmModel} onChange={(e) => setChunkLlmModel(e.target.value)}>
-                    {llmBackend === 'ollama' 
-                      ? OLLAMA_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>) 
-                      : HF_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>)
-                    }
+                    {llmBackend === 'ollama' ? OLLAMA_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>) : HF_MODELS.map(m => <option key={m.key} value={m.key}>{m.name}</option>)}
                   </select>
                   <span className="hint">⚠️ 가장 느리지만 가장 정확</span>
                 </div>
               )}
+            </div>
+
+            {/* 검색 품질 설정 ← NEW */}
+            <div className="search-quality-settings">
+              <label className="settings-label">🎯 검색 품질 설정</label>
+              <div className="quality-options">
+                <div className="quality-option">
+                  <label>
+                    <input 
+                      type="checkbox" 
+                      checked={showLowConfidence} 
+                      onChange={(e) => setShowLowConfidence(e.target.checked)} 
+                    />
+                    🔴 낮은 신뢰도 결과 표시
+                  </label>
+                </div>
+                <div className="quality-option threshold">
+                  <span>유사도 임계값: {similarityThreshold ? `${(similarityThreshold * 100).toFixed(0)}%` : '없음'}</span>
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="0.7" 
+                    step="0.05" 
+                    value={similarityThreshold || 0} 
+                    onChange={(e) => {
+                      const val = Number(e.target.value)
+                      setSimilarityThreshold(val > 0 ? val : null)
+                    }} 
+                  />
+                </div>
+              </div>
             </div>
 
             <div className="clarification-toggle">
@@ -758,12 +1126,16 @@ function App() {
 
             {documents.length > 0 && (
               <div className="doc-list">
-                <label>📚 업로드된 문서</label>
+                <label>📚 업로드된 문서 ({documents.length})</label>
                 {documents.map((doc, i) => (
                   <div key={i} className="doc-item">
-                    <div>
+                    <div className="doc-info">
                       <strong>{doc.doc_name}</strong>
-                      <span className="doc-meta">{doc.chunk_count}개 조각{doc.chunk_method && ` • ${doc.chunk_method}`}</span>
+                      <span className="doc-meta">
+                        {doc.chunk_count}개 청크
+                        {doc.chunk_method && ` • ${doc.chunk_method}`}
+                        {doc.model && ` • ${doc.model.split('/').pop()}`}
+                      </span>
                     </div>
                     <button onClick={() => handleDeleteDocument(doc.doc_name)}>🗑️</button>
                   </div>
@@ -780,6 +1152,7 @@ function App() {
               </div>
             </div>
 
+            {/* 되묻기 박스 */}
             {clarificationMessage && clarificationOptions.length > 0 && (
               <div className="clarification-box">
                 <div className="clarification-header">
@@ -818,42 +1191,53 @@ function App() {
               </div>
             )}
 
+            {/* AI 종합 답변 */}
             {(globalAnswerLoading || globalAnswer) && !clarificationMessage && (
               <div className="global-answer">
                 <h3>🤖 AI 종합 답변</h3>
-                {globalAnswerLoading ? <div className="loading-answer"><span className="spinner"></span>답변 생성 중... ({llmBackend === 'ollama' ? 'Ollama' : 'HuggingFace'})</div> : <div className="answer-text">{globalAnswer}</div>}
+                {globalAnswerLoading ? (
+                  <div className="loading-answer">
+                    <span className="spinner"></span>
+                    답변 생성 중... ({llmBackend === 'ollama' ? 'Ollama' : 'HuggingFace'})
+                  </div>
+                ) : (
+                  <div className="answer-text">{globalAnswer}</div>
+                )}
               </div>
             )}
 
+            {/* 품질 요약 카드 ← NEW */}
+            {ragResult?.quality_summary && ragResult.results && ragResult.results.length > 0 && (
+              <QualitySummaryCard 
+                summary={ragResult.quality_summary} 
+                warning={ragResult.quality_warning}
+                resultCount={ragResult.results.length}
+              />
+            )}
+
+            {/* 검색 결과 */}
             {ragResult?.results && ragResult.results.length > 0 && (
               <div className="search-results">
                 <h3>📄 관련 문서 조각 ({ragResult.results.length}개)</h3>
                 {ragResult.results.map((r, idx) => (
-                  <div key={idx} className="result-card">
-                    <div className="card-header">
-                      <div className="source-info">
-                        <span className="source-file">📄 {r.metadata?.doc_name}</span>
-                        {getArticleInfo(r.metadata) && <span className="article-info">📌 {getArticleInfo(r.metadata)}</span>}
-                      </div>
-                      <div className="relevance" style={{ color: getSimilarityColor(r.similarity) }}>
-                        <span className="relevance-value">{getSimilarityLabel(r.similarity)}</span>
-                        <span className="relevance-percent">{(r.similarity * 100).toFixed(0)}%</span>
-                      </div>
-                    </div>
-                    <div className="card-content">{r.text}</div>
-                    <button className="chunk-ai-btn" onClick={() => handleChunkAIAnswer(idx, r.text)} disabled={r.aiLoading}>{r.aiLoading ? '생성 중...' : '🤖 이 내용으로 답변 생성'}</button>
-                    {r.aiAnswer && <div className="chunk-answer"><div className="chunk-answer-title">💡 AI 답변</div><div className="chunk-answer-text">{r.aiAnswer}</div></div>}
-                  </div>
+                  <ResultCard 
+                    key={idx}
+                    result={r}
+                    index={idx}
+                    onAskChunk={handleChunkAIAnswer}
+                  />
                 ))}
               </div>
             )}
 
-            {ragResult && (!ragResult.results || ragResult.results.length === 0) && !loading && <div className="no-results">관련 문서를 찾을 수 없습니다.</div>}
+            {ragResult && (!ragResult.results || ragResult.results.length === 0) && !loading && (
+              <div className="no-results">관련 문서를 찾을 수 없습니다.</div>
+            )}
           </>
         )}
       </main>
 
-      <footer className="footer">v5.0 - 확장 청킹 (Recursive/Semantic/LLM) + 임베딩 모델 필터링 (dim≤1024, mem≤1300MB)</footer>
+      <footer className="footer">v5.1 - 검색 품질 시각화 + 메타데이터 뷰어 + 신뢰도 표시</footer>
     </div>
   )
 }
