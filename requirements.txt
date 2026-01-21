@@ -1,26 +1,28 @@
-# FastAPI
+# Core
 fastapi
 uvicorn
+pydantic
 
 # ML/DL
 torch
 transformers
-scikit-learn
+sentence-transformers
 numpy
+scikit-learn
 
-# Vector DB
+# Vector Store
 chromadb
 
-# Document Processing
-python-docx
+# Document Parsing
+docling
 pymupdf
-pdfplumber
+python-docx
 beautifulsoup4
-olefile
+lxml
 
-# HTTP
+# Utilities
 requests
 
-# Optional: LangChain (참고용)
-# langchain
-# langchain-community
+# Optional: for xlsx/csv
+openpyxl
+pandas

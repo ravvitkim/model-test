@@ -1,9 +1,16 @@
 """
-RAG 패키지 - 리팩토링 v5.1
-- 검색 품질 개선 (confidence, threshold)
-- 청크 크기 최적화 (300자)
-- 블록 기반 청킹 정상 작동
+RAG 패키지 v6.0
+- Docling 기반 문서 파싱 (표 지원)
+- 개선된 검색 (similarity_threshold)
+- 가독성 개선된 메타데이터 (제N조 형식)
 """
+
+from .document_loader import (
+    load_document,
+    get_supported_extensions,
+    ParsedDocument,
+    ContentBlock,
+)
 
 from .chunker import (
     create_chunks,
@@ -24,7 +31,7 @@ from .chunker import (
 from .vector_store import (
     search,
     search_with_context,
-    search_advanced,  # 새로 추가
+    search_advanced,
     add_documents,
     add_single_text,
     list_documents,
@@ -34,10 +41,10 @@ from .vector_store import (
     get_embedding_model_info,
     filter_compatible_models,
     is_model_compatible,
+    get_collection_info,
     EMBEDDING_MODEL_SPECS,
     MAX_EMBEDDING_DIM,
     MAX_MEMORY_MB,
-    # 새로 추가된 상수
     DEFAULT_SIMILARITY_THRESHOLD,
     HIGH_CONFIDENCE_THRESHOLD,
     SearchResult,
@@ -53,22 +60,11 @@ from .llm import (
     HUGGINGFACE_MODELS,
 )
 
-from .document_loader import (
-    load_document,
-    get_supported_extensions,
-)
-
-from .parser import (
-    ParsedDocument,
-    ContentBlock,
-    parse_plain_text,
-    parse_articles,
-)
-
 from .prompt import (
     build_rag_prompt,
     build_chunk_prompt,
     build_summary_prompt,
+    build_clarification_prompt,
 )
 
-__version__ = "5.1.0"
+__version__ = "6.0.0"
