@@ -497,7 +497,7 @@ def create_chunks_from_blocks(
     overlap: int = 50,
     method: str = "recursive"
 ) -> List[Chunk]:
-    """블록 기반 청킹 (메타데이터 유지)"""
+    """블록 기반 청킹 (메타데이터 유지, 섹션별 SOP ID)"""
     chunks = []
     idx = 0
 
@@ -511,9 +511,12 @@ def create_chunks_from_blocks(
             if not t.strip():
                 continue
 
-            # 메타데이터 구성 - 제N조 형식 포함
+            # 메타데이터 구성
             article_num = block.metadata.get('article_num') or block.section
             article_type = block.metadata.get('article_type', 'article')
+            
+            # 블록별 SOP ID 우선, 없으면 문서 전체 SOP ID
+            sop_id = block.metadata.get('sop_id') or doc.metadata.get("sop_id")
 
             # 가독성 좋은 section 표시
             section_display = None
@@ -523,7 +526,9 @@ def create_chunks_from_blocks(
                 elif article_type == 'chapter':
                     section_display = f"제{article_num}장"
                 elif article_type == 'section':
-                    section_display = f"제{article_num}절"
+                    section_display = article_num  # "1", "6" 등
+                elif article_type == 'subsection':
+                    section_display = article_num  # "6.1", "6.2" 등
                 else:
                     section_display = str(article_num)
 
@@ -533,12 +538,12 @@ def create_chunks_from_blocks(
                 metadata={
                     "doc_name": doc.metadata.get("file_name"),
                     "doc_title": doc.metadata.get("title"),
-                    "sop_id": doc.metadata.get("sop_id"),
+                    "sop_id": sop_id,  # 섹션별 SOP ID
                     "version": doc.metadata.get("version"),
                     "article_num": article_num,
                     "article_type": article_type,
-                    "section": section_display,  # 제N조 형식
-                    "title": block.metadata.get("title"),
+                    "section": section_display,
+                    "title": block.metadata.get("title"),  # 조항 제목
                     "page": block.page,
                     "block_type": block.block_type,
                 }

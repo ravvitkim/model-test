@@ -87,88 +87,61 @@ def load_document(filename: str, content: bytes) -> ParsedDocument:
 def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
     """
     DOCX 하이브리드 파싱
-    - Docling: 표(Table) 파싱
-    - python-docx: 텍스트 + 조항 구조
+    - 문서 순서대로 텍스트 추출 (중요!)
+    - 표(Table) 파싱 지원
     """
-    tables = []
+    tables_data = []
     
-    # 1. Docling으로 표 추출 시도
-    try:
-        from docling.document_converter import DocumentConverter
-        import tempfile
-        import os
-        
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        
-        try:
-            converter = DocumentConverter()
-            result = converter.convert(tmp_path)
-            doc = result.document
-            
-            # 표만 추출
-            for item in doc.iterate_items():
-                element = item[1] if isinstance(item, tuple) else item
-                element_type = type(element).__name__.lower()
-                
-                if "table" in element_type:
-                    table_data = _extract_table_data(element)
-                    if table_data:
-                        tables.append(table_data)
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass
-                
-    except Exception as e:
-        print(f"⚠️ Docling 표 추출 실패: {e}")
-    
-    # 2. python-docx로 텍스트 + 조항 파싱
+    # python-docx로 문서 순서대로 파싱
     try:
         from docx import Document
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
     except ImportError:
         return ParsedDocument(
             text="python-docx가 설치되지 않았습니다.",
             blocks=[],
             metadata={"file_name": filename, "error": "python-docx not installed"},
-            tables=tables
+            tables=[]
         )
     
     doc = Document(io.BytesIO(content))
     all_text = []
     
-    # 단락 추출
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            all_text.append(text)
-    
-    # 표 텍스트도 추가 (python-docx)
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            rows.append(cells)
-            all_text.append(' | '.join(cells))
+    # 문서 순서대로 순회 (핵심!)
+    for element in doc.element.body:
+        # 단락(Paragraph)
+        if element.tag.endswith('p'):
+            para = Paragraph(element, doc)
+            text = para.text.strip()
+            if text:
+                all_text.append(text)
         
-        # Docling 표가 없으면 python-docx 표 사용
-        if not tables:
-            tables.append({"rows": rows, "source": "python-docx"})
+        # 표(Table)
+        elif element.tag.endswith('tbl'):
+            table = Table(element, doc)
+            rows = []
+            for row in table.rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                rows.append(cells)
+                # 표 내용도 텍스트에 포함 (SOP ID 추적용)
+                all_text.append(' | '.join(cells))
+            
+            if rows:
+                tables_data.append({"rows": rows, "source": "python-docx"})
     
     full_text = '\n'.join(all_text)
     
-    # 3. 조항 단위 블록 생성
+    # 조항 단위 블록 생성
     blocks = _extract_article_blocks(full_text)
     
-    # 4. 메타데이터
+    # 메타데이터
     metadata = {
         "file_name": filename,
         "file_type": "docx",
         "title": _extract_title(full_text),
-        "table_count": len(tables),
-        "parser": "hybrid (docling+python-docx)" if tables else "python-docx"
+        "table_count": len(tables_data),
+        "parser": "python-docx (ordered)"
     }
     metadata.update(_extract_sop_metadata(full_text))
     
@@ -176,7 +149,7 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
         text=full_text,
         blocks=blocks,
         metadata=metadata,
-        tables=tables
+        tables=tables_data
     )
 
 
@@ -353,11 +326,14 @@ def _is_article_document(text: str) -> bool:
 
 
 def _extract_article_blocks(text: str) -> List[ContentBlock]:
-    """조항 단위 블록 추출"""
+    """조항 단위 블록 추출 (SOP 경계 감지)"""
     lines = text.split('\n')
     blocks = []
     current_lines = []
-    current_meta = {"article_num": None, "article_type": "intro"}
+    current_sop_id = ""  # 현재 SOP ID
+    current_meta = {"article_num": None, "article_type": "intro", "title": ""}
+    
+    sop_id_pattern = re.compile(r'(SOP[-_][A-Z]+[-_]\d+)', re.IGNORECASE)
 
     def flush():
         if current_lines:
@@ -370,20 +346,38 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
                     metadata={
                         "article_num": current_meta["article_num"],
                         "article_type": current_meta["article_type"],
-                        "title": current_lines[0].strip() if current_lines else ""
+                        "title": current_meta.get("title", ""),
+                        "sop_id": current_sop_id
                     }
                 ))
 
     for line in lines:
         line_strip = line.strip()
+        
+        # SOP ID 추출 - 새 SOP 시작이면 현재 블록 flush 먼저!
+        sop_match = sop_id_pattern.search(line_strip)
+        if sop_match:
+            new_sop_id = sop_match.group(1).upper().replace('_', '-')
+            if new_sop_id != current_sop_id:
+                # 새 SOP 시작 → 현재 블록 저장 후 SOP ID 갱신
+                flush()
+                current_lines = []
+                current_meta = {"article_num": None, "article_type": "intro", "title": ""}
+                current_sop_id = new_sop_id
+        
+        # 조항 패턴 매칭
         matched = False
-
         for pattern, a_type in ARTICLE_PATTERNS:
             m = re.match(pattern, line_strip)
             if m:
                 flush()
                 current_lines = [line]
-                current_meta = {"article_num": m.group(1), "article_type": a_type}
+                title = m.group(2).strip() if m.lastindex and m.lastindex >= 2 else ""
+                current_meta = {
+                    "article_num": m.group(1),
+                    "article_type": a_type,
+                    "title": title
+                }
                 matched = True
                 break
 
