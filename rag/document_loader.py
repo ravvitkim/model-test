@@ -88,7 +88,7 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
     """
     DOCX 하이브리드 파싱
     - 문서 순서대로 텍스트 추출 (중요!)
-    - 표(Table) 파싱 지원
+    - 표(Table)를 가독성 좋은 형태로 변환
     """
     tables_data = []
     
@@ -107,6 +107,7 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
     
     doc = Document(io.BytesIO(content))
     all_text = []
+    current_section = None  # 현재 섹션 추적
     
     # 문서 순서대로 순회 (핵심!)
     for element in doc.element.body:
@@ -116,6 +117,10 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
             text = para.text.strip()
             if text:
                 all_text.append(text)
+                # 섹션 감지 (예: "3. 책임 및 역할")
+                section_match = re.match(r'^(\d+(?:\.\d+)?)\.\s+(.+)', text)
+                if section_match:
+                    current_section = section_match.group(2).strip()
         
         # 표(Table)
         elif element.tag.endswith('tbl'):
@@ -124,10 +129,11 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
             for row in table.rows:
                 cells = [cell.text.strip() for cell in row.cells]
                 rows.append(cells)
-                # 표 내용도 텍스트에 포함 (SOP ID 추적용)
-                all_text.append(' | '.join(cells))
             
             if rows:
+                # 표를 가독성 좋은 텍스트로 변환
+                table_text = _format_table_as_text(rows, current_section)
+                all_text.append(table_text)
                 tables_data.append({"rows": rows, "source": "python-docx"})
     
     full_text = '\n'.join(all_text)
@@ -151,6 +157,62 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
         metadata=metadata,
         tables=tables_data
     )
+
+
+def _format_table_as_text(rows: List[List[str]], section_title: str = None) -> str:
+    """
+    표를 가독성 좋은 텍스트로 변환
+    - 2열 표: 키-값 형태
+    - 다열 표: 헤더 + 행 형태
+    """
+    if not rows:
+        return ""
+    
+    # 열 개수 확인
+    num_cols = max(len(row) for row in rows)
+    
+    # 2열 표: 키-값 형태
+    if num_cols == 2:
+        lines = []
+        if section_title:
+            lines.append(f"[표: {section_title}]")
+        
+        # 첫 행이 헤더인지 확인 (둘 다 짧은 텍스트면 헤더로 간주)
+        first_row = rows[0] if rows else []
+        is_header = len(first_row) >= 2 and len(first_row[0]) < 10 and len(first_row[1]) < 10
+        
+        data_rows = rows[1:] if is_header else rows
+        
+        for row in data_rows:
+            if len(row) >= 2:
+                key = row[0].strip()
+                value = row[1].strip()
+                if key and value:
+                    lines.append(f"• {key}: {value}")
+                elif key:
+                    lines.append(f"• {key}")
+        
+        return '\n'.join(lines)
+    
+    # 다열 표: 헤더 + 행 형태
+    else:
+        lines = []
+        if section_title:
+            lines.append(f"[표: {section_title}]")
+        
+        # 첫 행을 헤더로 가정
+        if rows:
+            header = rows[0]
+            for row in rows[1:]:
+                row_parts = []
+                for i, cell in enumerate(row):
+                    if cell.strip():
+                        col_name = header[i] if i < len(header) else f"열{i+1}"
+                        row_parts.append(f"{col_name}: {cell.strip()}")
+                if row_parts:
+                    lines.append("• " + " | ".join(row_parts))
+        
+        return '\n'.join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
