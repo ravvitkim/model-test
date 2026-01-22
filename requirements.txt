@@ -19,6 +19,8 @@ pymupdf
 python-docx
 beautifulsoup4
 lxml
+pdf2image        # PDF → 이미지 변환용
+rapidocr         # OCR용
 
 # Utilities
 requests

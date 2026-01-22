@@ -1,8 +1,9 @@
 """
-문서 로더 v6.0 - Docling 기반
+문서 로더 v6.1 - Docling 기반
 - PDF, DOCX, HTML, 이미지 등 다양한 형식 지원
 - 표(Table) 파싱 지원
 - 구조화된 메타데이터 추출
+- OCR fallback 지원
 """
 
 import re
@@ -157,6 +158,64 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
         metadata=metadata,
         tables=tables_data
     )
+
+
+def _load_docx_basic(filename: str, content: bytes) -> ParsedDocument:
+    """기본 DOCX 파싱"""
+    try:
+        from docx import Document
+    except ImportError:
+        return ParsedDocument(
+            text="DOCX 파싱 라이브러리(python-docx)가 설치되지 않았습니다.",
+            blocks=[],
+            metadata={"file_name": filename, "error": "python-docx not installed"}
+        )
+
+    doc = Document(io.BytesIO(content))
+    blocks = []
+    all_text = []
+    tables = []
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text:
+            # 스타일로 타입 결정
+            style_name = para.style.name.lower() if para.style else ""
+            block_type = "title" if "heading" in style_name else "paragraph"
+            blocks.append(ContentBlock(text=text, block_type=block_type))
+            all_text.append(text)
+
+    # 표 추출
+    for table in doc.tables:
+        rows = []
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            rows.append(cells)
+            all_text.append(' | '.join(cells))
+        if rows:
+            tables.append({"rows": rows})
+            blocks.append(ContentBlock(
+                text='\n'.join([' | '.join(r) for r in rows]),
+                block_type="table"
+            ))
+
+    full_text = '\n\n'.join(all_text)
+
+    if _is_article_document(full_text):
+        article_blocks = _extract_article_blocks(full_text)
+        if article_blocks:
+            blocks = article_blocks
+
+    metadata = {
+        "file_name": filename,
+        "file_type": "docx",
+        "title": _extract_title(full_text),
+        "table_count": len(tables),
+        "parser": "python-docx"
+    }
+    metadata.update(_extract_sop_metadata(full_text))
+
+    return ParsedDocument(text=full_text, blocks=blocks, metadata=metadata, tables=tables)
 
 
 def _format_table_as_text(rows: List[List[str]], section_title: str = None) -> str:
@@ -545,7 +604,7 @@ def _decode_text(content: bytes) -> str:
 
 
 def _load_pdf_basic(filename: str, content: bytes) -> ParsedDocument:
-    """기본 PDF 파싱 (PyMuPDF)"""
+    """기본 PDF 파싱 (PyMuPDF + OCR fallback)"""
     try:
         import fitz
     except ImportError:
@@ -562,28 +621,38 @@ def _load_pdf_basic(filename: str, content: bytes) -> ParsedDocument:
 
     for page_idx, page in enumerate(doc):
         text = page.get_text().strip()
-        if text:
-            blocks.append(ContentBlock(
-                text=text,
-                block_type="page",
-                page=page_idx + 1,
-                metadata={"source": "pymupdf"}
-            ))
-            all_text.append(text)
+
+        # 텍스트 없으면 OCR 실행
+        if not text:
+            ocr_text = _ocr_pdf_page(page)
+            if ocr_text:
+                text = ocr_text
+                source = "pymupdf+ocr"
+            else:
+                continue
+        else:
+            source = "pymupdf"
+
+        blocks.append(ContentBlock(
+            text=text,
+            block_type="page",
+            page=page_idx + 1,
+            metadata={"source": source}
+        ))
+        all_text.append(text)
 
         # 표 추출 시도
         try:
             page_tables = page.find_tables()
             for table in page_tables:
-                table_data = {
+                tables.append({
                     "page": page_idx + 1,
                     "rows": table.extract()
-                }
-                tables.append(table_data)
+                })
         except Exception:
             pass
 
-    full_text = '\n\n'.join(all_text)
+    full_text = "\n\n".join(all_text)
 
     # 조항 재파싱
     if _is_article_document(full_text):
@@ -597,69 +666,16 @@ def _load_pdf_basic(filename: str, content: bytes) -> ParsedDocument:
         "total_pages": len(doc),
         "title": _extract_title(full_text),
         "table_count": len(tables),
-        "parser": "pymupdf"
+        "parser": "pymupdf+ocr"
     }
     metadata.update(_extract_sop_metadata(full_text))
 
-    return ParsedDocument(text=full_text, blocks=blocks, metadata=metadata, tables=tables)
-
-
-def _load_docx_basic(filename: str, content: bytes) -> ParsedDocument:
-    """기본 DOCX 파싱"""
-    try:
-        from docx import Document
-    except ImportError:
-        return ParsedDocument(
-            text="DOCX 파싱 라이브러리(python-docx)가 설치되지 않았습니다.",
-            blocks=[],
-            metadata={"file_name": filename, "error": "python-docx not installed"}
-        )
-
-    doc = Document(io.BytesIO(content))
-    blocks = []
-    all_text = []
-    tables = []
-
-    for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            # 스타일로 타입 결정
-            style_name = para.style.name.lower() if para.style else ""
-            block_type = "title" if "heading" in style_name else "paragraph"
-            blocks.append(ContentBlock(text=text, block_type=block_type))
-            all_text.append(text)
-
-    # 표 추출
-    for table in doc.tables:
-        rows = []
-        for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            rows.append(cells)
-            all_text.append(' | '.join(cells))
-        if rows:
-            tables.append({"rows": rows})
-            blocks.append(ContentBlock(
-                text='\n'.join([' | '.join(r) for r in rows]),
-                block_type="table"
-            ))
-
-    full_text = '\n\n'.join(all_text)
-
-    if _is_article_document(full_text):
-        article_blocks = _extract_article_blocks(full_text)
-        if article_blocks:
-            blocks = article_blocks
-
-    metadata = {
-        "file_name": filename,
-        "file_type": "docx",
-        "title": _extract_title(full_text),
-        "table_count": len(tables),
-        "parser": "python-docx"
-    }
-    metadata.update(_extract_sop_metadata(full_text))
-
-    return ParsedDocument(text=full_text, blocks=blocks, metadata=metadata, tables=tables)
+    return ParsedDocument(
+        text=full_text,
+        blocks=blocks,
+        metadata=metadata,
+        tables=tables
+    )
 
 
 def _load_html_basic(filename: str, content: bytes) -> ParsedDocument:
@@ -740,3 +756,40 @@ def _load_csv(filename: str, content: bytes) -> ParsedDocument:
         },
         tables=[{"rows": rows}]
     )
+
+
+def _ocr_pdf_page(page, ocr=None, dpi=300):
+    """
+    PyMuPDF page → OCR 텍스트
+    ocr: RapidOCR 객체를 외부에서 전달 가능 (재사용 권장)
+    """
+    import tempfile
+    import os
+    
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        print("⚠️ RapidOCR not installed, skipping OCR")
+        return ""
+
+    if ocr is None:
+        ocr = RapidOCR()
+
+    pix = page.get_pixmap(dpi=dpi)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        pix.save(tmp.name)
+        img_path = tmp.name
+
+    try:
+        result, _ = ocr(img_path)
+        if result:
+            texts = [text for _, text, score in result if score > 0.5]
+            return "\n".join(texts)
+        return ""
+    except Exception as e:
+        print(f"⚠️ OCR failed: {e}")
+        return ""
+    finally:
+        if os.path.exists(img_path):
+            os.remove(img_path)
