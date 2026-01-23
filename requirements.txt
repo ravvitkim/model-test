@@ -2,9 +2,9 @@
 fastapi
 uvicorn
 pydantic
+python-multipart    # 🔥 추가 - 파일 업로드에 필수!
 
 # ML/DL
-torch
 transformers
 sentence-transformers
 numpy
@@ -19,8 +19,8 @@ pymupdf
 python-docx
 beautifulsoup4
 lxml
-pdf2image        # PDF → 이미지 변환용
-rapidocr         # OCR용
+pdf2image
+rapidocr-onnxruntime    # 🔥 수정 - rapidocr → rapidocr-onnxruntime
 
 # Utilities
 requests

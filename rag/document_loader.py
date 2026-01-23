@@ -1,9 +1,9 @@
 """
-문서 로더 v6.1 - Docling 기반
+문서 로더 v6.2 - section_path 계층 추적 추가
 - PDF, DOCX, HTML, 이미지 등 다양한 형식 지원
 - 표(Table) 파싱 지원
-- 구조화된 메타데이터 추출
-- OCR fallback 지원
+- section_path: "5 > 5.1 > 5.1.1" 형태의 계층 경로
+- section_path_readable: "5 절차 > 5.1 문서체계 > 5.1.1 Level 1" 형태
 """
 
 import re
@@ -139,7 +139,7 @@ def _load_docx_hybrid(filename: str, content: bytes) -> ParsedDocument:
     
     full_text = '\n'.join(all_text)
     
-    # 조항 단위 블록 생성
+    # 조항 단위 블록 생성 (section_path 포함)
     blocks = _extract_article_blocks(full_text)
     
     # 메타데이터
@@ -416,15 +416,16 @@ def _count_pages(doc) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 조항 파싱 (SOP/법률 문서)
+# 조항 파싱 (SOP/법률 문서) - section_path 계층 추적 추가
 # ═══════════════════════════════════════════════════════════════════════════
 
 ARTICLE_PATTERNS = [
     (r'^제\s*(\d+)\s*조', 'article'),
     (r'^제\s*(\d+)\s*장', 'chapter'),
     (r'^제\s*(\d+)\s*절', 'section'),
-    (r'^(\d+)\.\s+([가-힣]+)', 'section'),      # "1. 목적", "6. 절차" 형식
-    (r'^(\d+\.\d+)\s+([가-힣]+)', 'subsection'), # "6.1 사전 준비", "6.2 시약확인" 형식
+    (r'^(\d+)\.\s+([가-힣A-Za-z].+)', 'section'),       # "1. 목적", "6. 절차" 형식
+    (r'^(\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsection'), # "6.1 사전 준비", "6.2 시약확인" 형식
+    (r'^(\d+\.\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsubsection'), # "5.1.1 Level 1" 형식
 ]
 
 
@@ -434,7 +435,8 @@ def _is_article_document(text: str) -> bool:
         r'제\s*\d+\s*조',
         r'제\s*\d+\s*장',
         r'제\s*\d+\s*절',
-        r'^\d+\.\d+',
+        r'^\d+\.\d+\.\d+',  # 5.1.1 형식
+        r'^\d+\.\d+',       # 5.1 형식
         r'^SOP[-_]?\d+',
     ]
 
@@ -447,7 +449,13 @@ def _is_article_document(text: str) -> bool:
 
 
 def _extract_article_blocks(text: str) -> List[ContentBlock]:
-    """조항 단위 블록 추출 (SOP 경계 감지)"""
+    """
+    조항 단위 블록 추출 (SOP 경계 감지 + section_path 계층 추적)
+    
+    🔥 핵심 기능:
+    - section_path: "5 > 5.1 > 5.1.1"
+    - section_path_readable: "5 절차 > 5.1 문서체계 > 5.1.1 Level 1"
+    """
     lines = text.split('\n')
     blocks = []
     current_lines = []
@@ -456,10 +464,65 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
     
     sop_id_pattern = re.compile(r'(SOP[-_][A-Z]+[-_]\d+)', re.IGNORECASE)
 
+    # 🔥 계층 추적용 스택
+    section_stack = {
+        "section": {"num": None, "title": ""},           # 5
+        "subsection": {"num": None, "title": ""},        # 5.1
+        "subsubsection": {"num": None, "title": ""},     # 5.1.1
+    }
+    
+    # 한글 조항용 스택 (제N조, 제N장 등)
+    korean_stack = {
+        "chapter": {"num": None, "title": ""},   # 제N장
+        "article": {"num": None, "title": ""},   # 제N조
+    }
+
+    def build_section_path() -> Dict[str, str]:
+        """현재 스택에서 section_path 생성"""
+        path_parts = []
+        path_readable_parts = []
+        
+        # 숫자 기반 (5.1.1 형식)
+        if section_stack["section"]["num"]:
+            path_parts.append(section_stack["section"]["num"])
+            title = section_stack["section"]["title"]
+            path_readable_parts.append(f"{section_stack['section']['num']} {title}" if title else section_stack["section"]["num"])
+        
+        if section_stack["subsection"]["num"]:
+            path_parts.append(section_stack["subsection"]["num"])
+            title = section_stack["subsection"]["title"]
+            path_readable_parts.append(f"{section_stack['subsection']['num']} {title}" if title else section_stack["subsection"]["num"])
+        
+        if section_stack["subsubsection"]["num"]:
+            path_parts.append(section_stack["subsubsection"]["num"])
+            title = section_stack["subsubsection"]["title"]
+            path_readable_parts.append(f"{section_stack['subsubsection']['num']} {title}" if title else section_stack["subsubsection"]["num"])
+        
+        # 한글 조항 기반 (제N장 > 제N조)
+        if korean_stack["chapter"]["num"]:
+            ch_num = korean_stack["chapter"]["num"]
+            ch_title = korean_stack["chapter"]["title"]
+            path_parts.append(f"제{ch_num}장")
+            path_readable_parts.append(f"제{ch_num}장 {ch_title}" if ch_title else f"제{ch_num}장")
+        
+        if korean_stack["article"]["num"]:
+            art_num = korean_stack["article"]["num"]
+            art_title = korean_stack["article"]["title"]
+            path_parts.append(f"제{art_num}조")
+            path_readable_parts.append(f"제{art_num}조 {art_title}" if art_title else f"제{art_num}조")
+        
+        return {
+            "section_path": " > ".join(path_parts) if path_parts else None,
+            "section_path_readable": " > ".join(path_readable_parts) if path_readable_parts else None,
+        }
+
     def flush():
         if current_lines:
             block_text = '\n'.join(current_lines).strip()
             if block_text:
+                # section_path 정보 추가
+                path_info = build_section_path()
+                
                 blocks.append(ContentBlock(
                     text=block_text,
                     block_type=current_meta["article_type"],
@@ -468,7 +531,9 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
                         "article_num": current_meta["article_num"],
                         "article_type": current_meta["article_type"],
                         "title": current_meta.get("title", ""),
-                        "sop_id": current_sop_id
+                        "sop_id": current_sop_id,
+                        "section_path": path_info["section_path"],
+                        "section_path_readable": path_info["section_path_readable"],
                     }
                 ))
 
@@ -485,6 +550,16 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
                 current_lines = []
                 current_meta = {"article_num": None, "article_type": "intro", "title": ""}
                 current_sop_id = new_sop_id
+                # 스택 초기화
+                section_stack = {
+                    "section": {"num": None, "title": ""},
+                    "subsection": {"num": None, "title": ""},
+                    "subsubsection": {"num": None, "title": ""},
+                }
+                korean_stack = {
+                    "chapter": {"num": None, "title": ""},
+                    "article": {"num": None, "title": ""},
+                }
         
         # 조항 패턴 매칭
         matched = False
@@ -493,9 +568,32 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
             if m:
                 flush()
                 current_lines = [line]
+                
+                num = m.group(1)
                 title = m.group(2).strip() if m.lastindex and m.lastindex >= 2 else ""
+                
+                # 🔥 스택 업데이트
+                if a_type == "section":        # 5. 절차
+                    section_stack["section"] = {"num": num, "title": title}
+                    section_stack["subsection"] = {"num": None, "title": ""}
+                    section_stack["subsubsection"] = {"num": None, "title": ""}
+                
+                elif a_type == "subsection":   # 5.1 문서체계
+                    section_stack["subsection"] = {"num": num, "title": title}
+                    section_stack["subsubsection"] = {"num": None, "title": ""}
+                
+                elif a_type == "subsubsection":  # 5.1.1 Level 1
+                    section_stack["subsubsection"] = {"num": num, "title": title}
+                
+                elif a_type == "chapter":      # 제N장
+                    korean_stack["chapter"] = {"num": num, "title": title}
+                    korean_stack["article"] = {"num": None, "title": ""}
+                
+                elif a_type == "article":      # 제N조
+                    korean_stack["article"] = {"num": num, "title": title}
+                
                 current_meta = {
-                    "article_num": m.group(1),
+                    "article_num": num,
                     "article_type": a_type,
                     "title": title
                 }

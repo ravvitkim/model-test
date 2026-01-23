@@ -1,11 +1,15 @@
 """
-텍스트 청킹 모듈 v6.0
+텍스트 청킹 모듈 v6.2 - section_path 지원
 - sentence: 문장 단위
 - paragraph: 문단 단위
 - article: 조항 단위 (SOP/법률)
 - recursive: RecursiveCharacterTextSplitter
 - semantic: 의미 기반 분할
 - llm: LLM 기반 구조 파싱
+
+🔥 v6.2 추가:
+- section_path: "5 > 5.1 > 5.1.1" 형태의 계층 경로 지원
+- section_path_readable: 사람이 읽기 쉬운 형태
 """
 
 import re
@@ -40,8 +44,9 @@ ARTICLE_PATTERNS = [
     (r'^제\s*(\d+)\s*조', 'article'),
     (r'^제\s*(\d+)\s*장', 'chapter'),
     (r'^제\s*(\d+)\s*절', 'section'),
-    (r'^(\d+)\.\s+([가-힣]+)', 'section'),      # "1. 목적", "6. 절차" 형식
-    (r'^(\d+\.\d+)\s+([가-힣]+)', 'subsection'), # "6.1 사전 준비", "6.2 시약확인" 형식
+    (r'^(\d+)\.\s+([가-힣A-Za-z].+)', 'section'),       # "1. 목적" 형식
+    (r'^(\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsection'), # "6.1 사전 준비" 형식
+    (r'^(\d+\.\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsubsection'), # "5.1.1 Level 1" 형식
 ]
 
 
@@ -253,11 +258,10 @@ class RecursiveCharacterTextSplitter:
                         else:
                             break
                     current_chunk = overlap_parts
-                    current_size = overlap_size
+                    current_size = sum(len(p) for p in current_chunk)
 
                 current_chunk.append(part)
                 current_size += part_size
-
             else:
                 current_chunk.append(part)
                 current_size += part_size
@@ -265,16 +269,13 @@ class RecursiveCharacterTextSplitter:
         if current_chunk:
             chunks.append(sep.join(current_chunk))
 
-        return [c for c in chunks if c.strip()]
+        return chunks
 
     def _split_by_size(self, text: str) -> List[str]:
-        """강제 크기 분할"""
+        """크기 기반 분할"""
         chunks = []
-        start = 0
-        while start < len(text):
-            end = min(start + self.chunk_size, len(text))
-            chunks.append(text[start:end])
-            start = end - self.chunk_overlap if end < len(text) else end
+        for i in range(0, len(text), self.chunk_size - self.chunk_overlap):
+            chunks.append(text[i:i + self.chunk_size])
         return chunks
 
 
@@ -497,7 +498,11 @@ def create_chunks_from_blocks(
     overlap: int = 50,
     method: str = "recursive"
 ) -> List[Chunk]:
-    """블록 기반 청킹 (메타데이터 유지, 섹션별 SOP ID)"""
+    """
+    블록 기반 청킹 (메타데이터 유지, 섹션별 SOP ID)
+    
+    🔥 v6.2: section_path, section_path_readable 추가
+    """
     chunks = []
     idx = 0
 
@@ -529,8 +534,14 @@ def create_chunks_from_blocks(
                     section_display = article_num  # "1", "6" 등
                 elif article_type == 'subsection':
                     section_display = article_num  # "6.1", "6.2" 등
+                elif article_type == 'subsubsection':
+                    section_display = article_num  # "5.1.1" 등
                 else:
                     section_display = str(article_num)
+
+            # 🔥 section_path 추가
+            section_path = block.metadata.get("section_path")
+            section_path_readable = block.metadata.get("section_path_readable")
 
             chunks.append(Chunk(
                 text=t.strip(),
@@ -543,6 +554,8 @@ def create_chunks_from_blocks(
                     "article_num": article_num,
                     "article_type": article_type,
                     "section": section_display,
+                    "section_path": section_path,                    # 🔥 추가
+                    "section_path_readable": section_path_readable,  # 🔥 추가
                     "title": block.metadata.get("title"),  # 조항 제목
                     "page": block.page,
                     "block_type": block.block_type,
