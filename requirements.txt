@@ -28,3 +28,5 @@ requests
 # Optional: for xlsx/csv
 openpyxl
 pandas
+
+# pip install neo4j --break-system-packages

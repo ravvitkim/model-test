@@ -40,23 +40,70 @@ CHUNK_METHODS = {
 # 조항 패턴
 # ═══════════════════════════════════════════════════════════════════════════
 
+def normalize_section_number(text: str) -> str:
+    """
+    섹션 번호 정규화 (document_loader.py와 동일)
+    - "5-1" → "5.1"
+    - "5．1" → "5.1" (전각 점)
+    - "Ⅴ" → "5" (로마 숫자)
+    """
+    # 로마 숫자 → 아라비아 숫자
+    roman_map = {
+        'Ⅰ': '1', 'Ⅱ': '2', 'Ⅲ': '3', 'Ⅳ': '4', 'Ⅴ': '5',
+        'Ⅵ': '6', 'Ⅶ': '7', 'Ⅷ': '8', 'Ⅸ': '9', 'Ⅹ': '10',
+    }
+    for roman, arabic in roman_map.items():
+        text = text.replace(roman, arabic)
+    
+    # 전각 문자 → 반각
+    text = text.replace('．', '.').replace('－', '-').replace('　', ' ')
+    
+    # 하이픈을 점으로 (5-1 → 5.1)
+    text = re.sub(r'(\d+)\s*[-‐‑–—]\s*(\d+)', r'\1.\2', text)
+    
+    # 숫자 사이 공백 제거 (5 . 1 → 5.1)
+    text = re.sub(r'(\d+)\s*\.\s*(\d+)', r'\1.\2', text)
+    
+    return text
+
+
+# 🔥 구체적인 것부터 매칭! (순서 중요)
 ARTICLE_PATTERNS = [
-    (r'^제\s*(\d+)\s*조', 'article'),
-    (r'^제\s*(\d+)\s*장', 'chapter'),
-    (r'^제\s*(\d+)\s*절', 'section'),
-    (r'^(\d+)\.\s+([가-힣A-Za-z].+)', 'section'),       # "1. 목적" 형식
-    (r'^(\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsection'), # "6.1 사전 준비" 형식
-    (r'^(\d+\.\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsubsection'), # "5.1.1 Level 1" 형식
+    # 숫자형: 가장 구체적인 것부터!
+    (r'^(\d+\.\d+\.\d+)\s+(.+)', 'subsubsection'),      # 5.1.1 xxx
+    (r'^(\d+\.\d+)\s+(.+)', 'subsection'),              # 5.1 xxx  
+    (r'^(\d+)\.\s+(.+)', 'section'),                    # 5. xxx (점 있음)
+    (r'^(\d+)\s+([가-힣A-Za-z].+)', 'section'),         # 5 xxx (점 없음)
+    
+    # 한글 조항
+    (r'^제\s*(\d+)\s*조\s*(.*)', 'article'),
+    (r'^제\s*(\d+)\s*장\s*(.*)', 'chapter'),
+    (r'^제\s*(\d+)\s*절\s*(.*)', 'section'),
+    (r'^제\s*(\d+)\s*레벨\s*[:\(]?\s*(.+)', 'level'),
 ]
+
+# 이름 기반 섹션 (숫자 없을 때만)
+NAMED_SECTION_KEYWORDS = ['목적', '적용범위', '적용 범위', '정의', '책임', '절차', '참고문헌', '첨부']
 
 
 def detect_article(line: str) -> Optional[tuple]:
-    """조항 감지"""
-    line = line.strip()
+    """조항 감지 (정규화 후 매칭)"""
+    line = normalize_section_number(line.strip())
+    
+    # 숫자 패턴 먼저
     for pattern, a_type in ARTICLE_PATTERNS:
         match = re.match(pattern, line)
         if match:
-            return (match.group(1), a_type)
+            num = match.group(1)
+            title = match.group(2).strip() if match.lastindex >= 2 else ""
+            return (num, a_type, title)
+    
+    # 이름 기반 섹션 (숫자로 시작하지 않을 때만)
+    if not re.match(r'^\d', line):
+        for keyword in NAMED_SECTION_KEYWORDS:
+            if line.startswith(keyword):
+                return (keyword, 'named_section', '')
+    
     return None
 
 
@@ -525,8 +572,8 @@ def create_chunks_from_blocks(
         doc_title = doc_title_base or doc.metadata.get("file_name", "문서")
 
     for block in doc.blocks:
-        # 🔥 1. intro 블록 제거 (목적, 적용범위 등 RAG에서 제외)
-        if exclude_intro and block.metadata.get("article_type") == "intro":
+        # 🔥 1. intro, toc 블록 제거 (RAG에서 제외)
+        if exclude_intro and block.metadata.get("article_type") in ["intro", "toc"]:
             continue
         
         # 🔥 2. section_path 없는 블록 제거 (선택적)
