@@ -117,6 +117,7 @@ function App() {
       formData.append('collection', 'documents')
       formData.append('chunk_method', chunkMethod)
       formData.append('model', embeddingModel)
+      formData.append('exclude_intro', 'true')  // 🔥 v6.3: intro 블록 제외
 
       const response = await fetch(`${API_URL}/rag/upload`, {
         method: 'POST',
@@ -251,27 +252,6 @@ function App() {
   // 렌더링 헬퍼
   // ─────────────────────────────────────────────────────────────
 
-  const renderSectionPath = (metadata: MetadataDisplay) => {
-    // section_path_readable 우선, 없으면 section_path
-    if (metadata.section_path_readable) {
-      return (
-        <div className="section-path">
-          <span className="path-icon">📍</span>
-          <span className="path-text">{metadata.section_path_readable}</span>
-        </div>
-      )
-    }
-    if (metadata.section_path) {
-      return (
-        <div className="section-path">
-          <span className="path-icon">📍</span>
-          <span className="path-text">{metadata.section_path}</span>
-        </div>
-      )
-    }
-    return null
-  }
-
   const renderSource = (source: Source, index: number, messageIndex: number) => {
     const globalIndex = messageIndex * 100 + index
     const isExpanded = expandedSources.has(globalIndex)
@@ -296,11 +276,16 @@ function App() {
           </div>
         </div>
         
+        {/* 🔥 section_path를 헤더 바로 아래에 항상 표시 (펼치지 않아도) */}
+        {(meta.section_path_readable || meta.section_path) && (
+          <div className="section-path-preview">
+            <span className="path-icon">📍</span>
+            <span className="path-text">{meta.section_path_readable || meta.section_path}</span>
+          </div>
+        )}
+        
         {isExpanded && (
           <div className="source-details">
-            {/* 🔥 section_path 표시 */}
-            {renderSectionPath(meta)}
-            
             {meta.title && (
               <div className="source-title">
                 <strong>제목:</strong> {meta.title}

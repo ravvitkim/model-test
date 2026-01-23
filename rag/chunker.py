@@ -496,17 +496,43 @@ def create_chunks_from_blocks(
     doc,  # ParsedDocument
     chunk_size: int = 500,
     overlap: int = 50,
-    method: str = "recursive"
+    method: str = "recursive",
+    exclude_intro: bool = True,           # 🔥 intro 블록 제외 옵션
+    require_section_path: bool = False,   # 🔥 section_path 필수 여부
 ) -> List[Chunk]:
     """
     블록 기반 청킹 (메타데이터 유지, 섹션별 SOP ID)
     
-    🔥 v6.2: section_path, section_path_readable 추가
+    🔥 v6.3 개선:
+    - intro 블록 제거 (RAG 품질 향상)
+    - section_path 없는 블록 선택적 제거
+    - doc_title을 SOP ID 기반으로 설정
     """
     chunks = []
     idx = 0
+    
+    # 🔥 doc_title을 SOP ID 기반으로 설정
+    sop_id_global = doc.metadata.get("sop_id")
+    doc_title_base = doc.metadata.get("title", "")
+    
+    if sop_id_global:
+        # SOP ID가 있으면 우선 사용
+        doc_title = sop_id_global
+        # 제목도 있으면 조합
+        if doc_title_base and doc_title_base != sop_id_global:
+            doc_title = f"{doc_title_base} ({sop_id_global})"
+    else:
+        doc_title = doc_title_base or doc.metadata.get("file_name", "문서")
 
     for block in doc.blocks:
+        # 🔥 1. intro 블록 제거 (목적, 적용범위 등 RAG에서 제외)
+        if exclude_intro and block.metadata.get("article_type") == "intro":
+            continue
+        
+        # 🔥 2. section_path 없는 블록 제거 (선택적)
+        if require_section_path and not block.metadata.get("section_path"):
+            continue
+        
         if method == "recursive":
             texts = split_recursive(block.text, chunk_size, overlap)
         else:
@@ -521,7 +547,7 @@ def create_chunks_from_blocks(
             article_type = block.metadata.get('article_type', 'article')
             
             # 블록별 SOP ID 우선, 없으면 문서 전체 SOP ID
-            sop_id = block.metadata.get('sop_id') or doc.metadata.get("sop_id")
+            sop_id = block.metadata.get('sop_id') or sop_id_global
 
             # 가독성 좋은 section 표시
             section_display = None
@@ -536,10 +562,14 @@ def create_chunks_from_blocks(
                     section_display = article_num  # "6.1", "6.2" 등
                 elif article_type == 'subsubsection':
                     section_display = article_num  # "5.1.1" 등
+                elif article_type == 'level':
+                    section_display = f"Level {article_num}"  # "Level 1" 등
+                elif article_type == 'named_section':
+                    section_display = article_num  # "목적", "절차" 등
                 else:
                     section_display = str(article_num)
 
-            # 🔥 section_path 추가
+            # section_path
             section_path = block.metadata.get("section_path")
             section_path_readable = block.metadata.get("section_path_readable")
 
@@ -548,14 +578,14 @@ def create_chunks_from_blocks(
                 index=idx,
                 metadata={
                     "doc_name": doc.metadata.get("file_name"),
-                    "doc_title": doc.metadata.get("title"),
-                    "sop_id": sop_id,  # 섹션별 SOP ID
+                    "doc_title": doc_title,  # 🔥 SOP ID 기반 doc_title
+                    "sop_id": sop_id,
                     "version": doc.metadata.get("version"),
                     "article_num": article_num,
                     "article_type": article_type,
                     "section": section_display,
-                    "section_path": section_path,                    # 🔥 추가
-                    "section_path_readable": section_path_readable,  # 🔥 추가
+                    "section_path": section_path,
+                    "section_path_readable": section_path_readable,
                     "title": block.metadata.get("title"),  # 조항 제목
                     "page": block.page,
                     "block_type": block.block_type,

@@ -420,12 +420,31 @@ def _count_pages(doc) -> int:
 # ═══════════════════════════════════════════════════════════════════════════
 
 ARTICLE_PATTERNS = [
-    (r'^제\s*(\d+)\s*조', 'article'),
-    (r'^제\s*(\d+)\s*장', 'chapter'),
-    (r'^제\s*(\d+)\s*절', 'section'),
-    (r'^(\d+)\.\s+([가-힣A-Za-z].+)', 'section'),       # "1. 목적", "6. 절차" 형식
-    (r'^(\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsection'), # "6.1 사전 준비", "6.2 시약확인" 형식
-    (r'^(\d+\.\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsubsection'), # "5.1.1 Level 1" 형식
+    # 한글 조항
+    (r'^제\s*(\d+)\s*조\s*(.*)', 'article'),
+    (r'^제\s*(\d+)\s*장\s*(.*)', 'chapter'),
+    (r'^제\s*(\d+)\s*절\s*(.*)', 'section'),
+    
+    # 🔥 "제 N레벨" 형식 (이 문서 전용)
+    (r'^제\s*(\d+)\s*레벨\s*[:\(]?\s*(.+)', 'level'),  # "제 1레벨(품질매뉴얼):"
+    
+    # 숫자형 (점 있음): 구체적인 것 먼저!
+    (r'^(\d+\.\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsubsection'),  # "5.1.1 Level 1"
+    (r'^(\d+\.\d+)\s+([가-힣A-Za-z].+)', 'subsection'),          # "6.1 사전 준비"
+    (r'^(\d+)\.\s+([가-힣A-Za-z].+)', 'section'),                # "1. 목적"
+    
+    # 🔥 숫자형 (점 없음, 탭/공백으로 구분): "1  목적", "1.1  본 절차서는"
+    (r'^(\d+\.\d+\.\d+)\s{2,}(.+)', 'subsubsection'),  # "5.1.1  Level 1"
+    (r'^(\d+\.\d+)\s{2,}(.+)', 'subsection'),          # "1.1  본 절차서는"
+    (r'^(\d+)\s{2,}([가-힣A-Za-z].+)', 'section'),     # "1  목적"
+    
+    # 🔥 숫자 없는 주요 섹션 (이 문서 형식)
+    (r'^(목적)\s*(Purpose)?', 'named_section'),
+    (r'^(적용\s*범위)\s*(Scope)?', 'named_section'),
+    (r'^(정의)\s*(Definitions)?', 'named_section'),
+    (r'^(책임)\s*(Responsibilities)?', 'named_section'),
+    (r'^(절차)\s*(Procedure)?', 'named_section'),
+    (r'^(기타)\s*(.+)?', 'named_section'),
 ]
 
 
@@ -591,6 +610,17 @@ def _extract_article_blocks(text: str) -> List[ContentBlock]:
                 
                 elif a_type == "article":      # 제N조
                     korean_stack["article"] = {"num": num, "title": title}
+                
+                # 🔥 새 패턴 처리
+                elif a_type == "level":        # 제 N레벨
+                    section_stack["subsection"] = {"num": f"Level {num}", "title": title}
+                    section_stack["subsubsection"] = {"num": None, "title": ""}
+                
+                elif a_type == "named_section":  # 목적, 적용범위 등
+                    # 주요 섹션으로 처리 (스택 리셋)
+                    section_stack["section"] = {"num": num, "title": title}
+                    section_stack["subsection"] = {"num": None, "title": ""}
+                    section_stack["subsubsection"] = {"num": None, "title": ""}
                 
                 current_meta = {
                     "article_num": num,

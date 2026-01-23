@@ -35,7 +35,7 @@ from rag.llm import (
 )
 
 
-app = FastAPI(title="RAG Chatbot API", version="6.2.0")
+app = FastAPI(title="RAG Chatbot API", version="6.3.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -178,7 +178,13 @@ def root():
         "device": device,
         "cuda_available": torch.cuda.is_available(),
         "ollama_available": OllamaLLM.is_available(),
-        "features": ["section_path 계층 추적", "챗봇 대화 히스토리", "similarity_threshold 검색 필터링"],
+        "features": [
+            "section_path 계층 추적", 
+            "intro 블록 RAG 제외",      # 🔥 v6.3
+            "doc_title SOP ID 기반",    # 🔥 v6.3
+            "챗봇 대화 히스토리", 
+            "similarity_threshold 검색 필터링"
+        ],
     }
 
 
@@ -214,6 +220,7 @@ async def upload_document(
     chunk_method: str = Form(DEFAULT_CHUNK_METHOD),
     model: str = Form("multilingual-e5-small"),
     overlap: int = Form(DEFAULT_OVERLAP),
+    exclude_intro: bool = Form(True),  # 🔥 v6.3: intro 블록 제외
 ):
     start_time = time.time()
     try:
@@ -222,8 +229,20 @@ async def upload_document(
         
         parsed_doc = load_document(filename, content)
         
+        # 🔥 디버깅: 블록 정보 출력
+        print(f"\n📄 문서: {filename}")
+        print(f"   블록 수: {len(parsed_doc.blocks)}")
+        for i, block in enumerate(parsed_doc.blocks[:5]):  # 처음 5개만
+            print(f"   [{i}] type={block.metadata.get('article_type')}, num={block.metadata.get('article_num')}, path={block.metadata.get('section_path')}")
+        
         if chunk_method == "article" and parsed_doc.blocks:
-            chunks = create_chunks_from_blocks(parsed_doc, chunk_size=chunk_size, overlap=overlap, method="recursive")
+            chunks = create_chunks_from_blocks(
+                parsed_doc, 
+                chunk_size=chunk_size, 
+                overlap=overlap, 
+                method="recursive",
+                exclude_intro=exclude_intro,  # 🔥 v6.3
+            )
         else:
             chunks = create_chunks(parsed_doc.text, chunk_size=chunk_size, overlap=overlap, method=chunk_method)
             for chunk in chunks:
@@ -233,6 +252,23 @@ async def upload_document(
                     "sop_id": parsed_doc.metadata.get("sop_id"),
                     "version": parsed_doc.metadata.get("version"),
                 })
+        
+        # 🔥 빈 청크 체크
+        if not chunks:
+            # intro 제외했는데 청크가 없으면 intro 포함해서 다시 시도
+            print(f"⚠️ 청크가 0개! exclude_intro=False로 재시도")
+            chunks = create_chunks_from_blocks(
+                parsed_doc, 
+                chunk_size=chunk_size, 
+                overlap=overlap, 
+                method="recursive",
+                exclude_intro=False,  # intro 포함
+            )
+            
+            if not chunks:
+                raise HTTPException(400, "문서에서 텍스트를 추출할 수 없습니다.")
+        
+        print(f"   최종 청크 수: {len(chunks)}")
         
         model_path = resolve_model_path(model)
         texts = [c.text for c in chunks]
@@ -250,6 +286,8 @@ async def upload_document(
             "elapsed_seconds": round(time.time() - start_time, 2),
             "sample_metadata": metadatas[0] if metadatas else {},
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"업로드 실패: {str(e)}")
 

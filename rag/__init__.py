@@ -1,8 +1,8 @@
 """
-RAG 패키지 v6.0
-- Docling 기반 문서 파싱 (표 지원)
-- 개선된 검색 (similarity_threshold)
-- 가독성 개선된 메타데이터 (제N조 형식)
+RAG 패키지 v6.3
+- section_path 계층 추적
+- intro 블록 RAG 제외 (품질 향상)
+- doc_title SOP ID 기반
 """
 
 from .document_loader import (
@@ -67,4 +67,4 @@ from .prompt import (
     build_clarification_prompt,
 )
 
-__version__ = "6.0.0"
+__version__ = "6.3.0"
