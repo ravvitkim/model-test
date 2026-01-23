@@ -73,6 +73,7 @@ function App() {
   const [embeddingModel, setEmbeddingModel] = useState('multilingual-e5-small')
   const [llmModel, setLlmModel] = useState('qwen2.5:3b')
   const [chunkMethod, setChunkMethod] = useState('article')
+  const [nResults, setNResults] = useState(3)  // 🔥 참고 문서 수
   
   // 소스 확장 상태
   const [expandedSources, setExpandedSources] = useState<Set<number>>(new Set())
@@ -181,6 +182,7 @@ function App() {
           embedding_model: embeddingModel,
           llm_model: llmModel,
           include_sources: showSources,
+          n_results: nResults,  // 🔥 참고 문서 수
         }),
       })
 
@@ -407,6 +409,20 @@ function App() {
                 <option value="recursive">🔄 Recursive</option>
                 <option value="sentence">📝 문장 단위</option>
                 <option value="paragraph">📄 문단 단위</option>
+              </select>
+            </div>
+
+            <div className="setting-group">
+              <label>참고 문서 수</label>
+              <select 
+                value={nResults}
+                onChange={(e) => setNResults(Number(e.target.value))}
+              >
+                <option value={1}>1개</option>
+                <option value={2}>2개</option>
+                <option value={3}>3개 (기본)</option>
+                <option value={5}>5개</option>
+                <option value={10}>10개</option>
               </select>
             </div>
 

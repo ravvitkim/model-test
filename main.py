@@ -53,7 +53,7 @@ app.add_middleware(
 DEFAULT_CHUNK_SIZE = 200
 DEFAULT_OVERLAP = 50
 DEFAULT_CHUNK_METHOD = "article"
-DEFAULT_N_RESULTS = 5
+DEFAULT_N_RESULTS = 3  # 기본 참고 문서 수
 DEFAULT_SIMILARITY_THRESHOLD = 0.35
 
 PRESET_MODELS = {
@@ -212,6 +212,56 @@ def get_llm_models():
 # API 엔드포인트 - 문서 업로드
 # ═══════════════════════════════════════════════════════════════════════════
 
+@app.post("/rag/debug-parse")
+async def debug_parse_document(file: UploadFile = File(...)):
+    """🔥 디버깅용: 문서 파싱 결과 확인"""
+    content = await file.read()
+    filename = file.filename
+    
+    parsed_doc = load_document(filename, content)
+    
+    # 텍스트에서 조항 패턴 찾기
+    import re
+    text = parsed_doc.text
+    
+    # 각 패턴별 매칭 확인
+    pattern_matches = {}
+    test_patterns = [
+        (r'^(\d+\.\d+\.\d+)\s+', 'subsubsection'),
+        (r'^(\d+\.\d+)\s+', 'subsection'),
+        (r'^(\d+)\.\s+', 'section'),
+        (r'^제\s*(\d+)\s*조', 'article'),
+        (r'^제\s*(\d+)\s*장', 'chapter'),
+    ]
+    
+    for pattern, name in test_patterns:
+        matches = re.findall(pattern, text, re.MULTILINE)
+        pattern_matches[name] = matches[:10]  # 처음 10개만
+    
+    # 블록 정보
+    blocks_info = []
+    for i, block in enumerate(parsed_doc.blocks):
+        blocks_info.append({
+            "index": i,
+            "article_type": block.metadata.get("article_type"),
+            "article_num": block.metadata.get("article_num"),
+            "section_path": block.metadata.get("section_path"),
+            "title": block.metadata.get("title"),
+            "text_preview": block.text[:100] + "..." if len(block.text) > 100 else block.text,
+        })
+    
+    # 텍스트 처음 2000자
+    text_preview = text[:2000]
+    
+    return {
+        "filename": filename,
+        "total_blocks": len(parsed_doc.blocks),
+        "pattern_matches": pattern_matches,
+        "blocks": blocks_info[:20],  # 처음 20개 블록
+        "text_preview": text_preview,
+    }
+
+
 @app.post("/rag/upload")
 async def upload_document(
     file: UploadFile = File(...),
@@ -229,11 +279,40 @@ async def upload_document(
         
         parsed_doc = load_document(filename, content)
         
-        # 🔥 디버깅: 블록 정보 출력
-        print(f"\n📄 문서: {filename}")
-        print(f"   블록 수: {len(parsed_doc.blocks)}")
-        for i, block in enumerate(parsed_doc.blocks[:5]):  # 처음 5개만
-            print(f"   [{i}] type={block.metadata.get('article_type')}, num={block.metadata.get('article_num')}, path={block.metadata.get('section_path')}")
+        # 🔥 디버깅: 블록 정보 상세 출력
+        print(f"\n{'='*70}")
+        print(f"📄 문서 업로드: {filename}")
+        print(f"{'='*70}")
+        print(f"   SOP ID: {parsed_doc.metadata.get('sop_id', '없음')}")
+        print(f"   제목: {parsed_doc.metadata.get('title', '없음')}")
+        print(f"   총 블록 수: {len(parsed_doc.blocks)}")
+        print(f"\n   📋 블록 목록:")
+        print(f"   {'─'*60}")
+        for i, block in enumerate(parsed_doc.blocks):
+            a_type = block.metadata.get('article_type', '?')
+            a_num = block.metadata.get('article_num', '')
+            title = block.metadata.get('title', '')[:30]
+            path = block.metadata.get('section_path_readable') or block.metadata.get('section_path', '')
+            
+            # 타입별 이모지
+            type_emoji = {
+                'intro': '📝',
+                'section': '📁',
+                'subsection': '  📂',
+                'subsubsection': '    📄',
+                'named_section': '🏷️',
+                'level': '  🔢',
+                'article': '📜',
+                'chapter': '📖',
+            }.get(a_type, '❓')
+            
+            # 블록 미리보기
+            preview = block.text[:40].replace('\n', ' ') + '...' if len(block.text) > 40 else block.text.replace('\n', ' ')
+            
+            print(f"   {type_emoji} [{i:2d}] {a_type:<15} | {str(a_num):<8} | {title:<20}")
+            if path:
+                print(f"         📍 {path}")
+        print(f"   {'─'*60}")
         
         if chunk_method == "article" and parsed_doc.blocks:
             chunks = create_chunks_from_blocks(
@@ -276,6 +355,18 @@ async def upload_document(
         
         vector_store.add_documents(texts=texts, metadatas=metadatas, collection_name=collection, model_name=model_path)
         
+        # 🔥 Neo4j 그래프에도 자동 업로드
+        graph_uploaded = False
+        try:
+            from rag.graph_store import document_to_graph, Neo4jGraphStore
+            graph = get_graph_store()
+            if graph.test_connection():
+                document_to_graph(graph, parsed_doc, parsed_doc.metadata.get("sop_id"))
+                graph_uploaded = True
+                print(f"   ✅ Neo4j 그래프 업로드 완료")
+        except Exception as graph_error:
+            print(f"   ⚠️ Neo4j 그래프 업로드 실패 (무시됨): {graph_error}")
+        
         return {
             "success": True,
             "filename": filename,
@@ -285,6 +376,7 @@ async def upload_document(
             "chunk_method": chunk_method,
             "elapsed_seconds": round(time.time() - start_time, 2),
             "sample_metadata": metadatas[0] if metadatas else {},
+            "graph_uploaded": graph_uploaded,  # 🔥 그래프 업로드 여부
         }
     except HTTPException:
         raise
@@ -478,13 +570,167 @@ def get_chunk_methods():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# API 엔드포인트 - Neo4j 그래프
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Neo4j 그래프 저장소 (lazy 초기화)
+_graph_store = None
+
+def get_graph_store():
+    global _graph_store
+    if _graph_store is None:
+        from rag.graph_store import Neo4jGraphStore
+        _graph_store = Neo4jGraphStore()
+        _graph_store.connect()
+    return _graph_store
+
+
+@app.get("/graph/status")
+def graph_status():
+    """Neo4j 연결 상태 확인"""
+    try:
+        graph = get_graph_store()
+        connected = graph.test_connection()
+        stats = graph.get_graph_stats() if connected else {}
+        return {
+            "connected": connected,
+            "stats": stats
+        }
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+@app.post("/graph/init")
+def graph_init():
+    """Neo4j 스키마 초기화"""
+    try:
+        graph = get_graph_store()
+        graph.init_schema()
+        return {"success": True, "message": "스키마 초기화 완료"}
+    except Exception as e:
+        raise HTTPException(500, f"스키마 초기화 실패: {str(e)}")
+
+
+@app.delete("/graph/clear")
+def graph_clear():
+    """Neo4j 모든 데이터 삭제"""
+    try:
+        graph = get_graph_store()
+        graph.clear_all()
+        return {"success": True, "message": "모든 데이터 삭제 완료"}
+    except Exception as e:
+        raise HTTPException(500, f"데이터 삭제 실패: {str(e)}")
+
+
+@app.post("/graph/upload")
+async def graph_upload_document(file: UploadFile = File(...)):
+    """문서를 Neo4j 그래프로 업로드"""
+    try:
+        from rag.graph_store import document_to_graph
+        
+        content = await file.read()
+        filename = file.filename
+        
+        # 문서 파싱
+        parsed_doc = load_document(filename, content)
+        sop_id = parsed_doc.metadata.get("sop_id")
+        
+        # 그래프 변환
+        graph = get_graph_store()
+        document_to_graph(graph, parsed_doc, sop_id)
+        
+        return {
+            "success": True,
+            "filename": filename,
+            "sop_id": sop_id,
+            "blocks": len(parsed_doc.blocks)
+        }
+    except Exception as e:
+        raise HTTPException(500, f"그래프 업로드 실패: {str(e)}")
+
+
+@app.get("/graph/documents")
+def graph_list_documents():
+    """Neo4j의 모든 문서 목록"""
+    try:
+        graph = get_graph_store()
+        docs = graph.get_all_documents()
+        return {"documents": docs, "count": len(docs)}
+    except Exception as e:
+        raise HTTPException(500, f"문서 목록 조회 실패: {str(e)}")
+
+
+@app.get("/graph/document/{sop_id}")
+def graph_get_document(sop_id: str):
+    """특정 문서의 상세 정보"""
+    try:
+        graph = get_graph_store()
+        doc = graph.get_document(sop_id)
+        if not doc:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {sop_id}")
+        return doc
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"문서 조회 실패: {str(e)}")
+
+
+@app.get("/graph/document/{sop_id}/hierarchy")
+def graph_get_hierarchy(sop_id: str):
+    """문서의 섹션 계층 구조"""
+    try:
+        graph = get_graph_store()
+        hierarchy = graph.get_section_hierarchy(sop_id)
+        return {"sop_id": sop_id, "hierarchy": hierarchy}
+    except Exception as e:
+        raise HTTPException(500, f"계층 구조 조회 실패: {str(e)}")
+
+
+@app.get("/graph/document/{sop_id}/references")
+def graph_get_references(sop_id: str):
+    """문서의 참조 관계"""
+    try:
+        graph = get_graph_store()
+        refs = graph.get_document_references(sop_id)
+        if not refs:
+            raise HTTPException(404, f"문서를 찾을 수 없습니다: {sop_id}")
+        return refs
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"참조 조회 실패: {str(e)}")
+
+
+@app.get("/graph/search/sections")
+def graph_search_sections(keyword: str, sop_id: str = None):
+    """섹션 내용 검색"""
+    try:
+        graph = get_graph_store()
+        results = graph.search_sections(keyword, sop_id)
+        return {"keyword": keyword, "results": results, "count": len(results)}
+    except Exception as e:
+        raise HTTPException(500, f"검색 실패: {str(e)}")
+
+
+@app.get("/graph/search/terms")
+def graph_search_terms(term: str):
+    """용어 검색"""
+    try:
+        graph = get_graph_store()
+        results = graph.search_by_term(term)
+        return {"term": term, "results": results, "count": len(results)}
+    except Exception as e:
+        raise HTTPException(500, f"용어 검색 실패: {str(e)}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 서버 실행
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
     print("\n" + "=" * 60)
-    print("🤖 RAG Chatbot API v6.2")
+    print("🤖 RAG Chatbot API v6.3 + Neo4j")
     print("=" * 60)
     if torch.cuda.is_available():
         print(f"✅ CUDA: {torch.cuda.get_device_name(0)}")
@@ -498,5 +744,6 @@ if __name__ == "__main__":
     print("=" * 60)
     print("URL: http://localhost:8000")
     print("Docs: http://localhost:8000/docs")
+    print("Graph API: /graph/*")
     print("=" * 60)
     uvicorn.run(app, host="0.0.0.0", port=8000)
